@@ -20,43 +20,148 @@
     .error { background: #fff0ef; color: #9c2c20; }
     .item { border-top: 1px solid #d9e2ec; padding: 10px 0; }
     .urgent { font-size: 1.15rem; font-weight: 750; }
+    .sound { background: #f0f8f9; border-left: 4px solid #087e8b; padding: 10px; margin-top: 10px; border-radius: 6px; }
   </style>
 </head>
 <body>
   <h1>VestCare</h1>
-  <div class="muted">Deteksi kamera → fuzzy urgency → peringatan suara di browser ponsel.</div>
+  <div class="muted">Deteksi kamera -> fuzzy urgency -> suara Ardi otomatis sesuai tingkat bahaya.</div>
   <section class="card">
-    <label for="apiKey">Kunci API</label>
-    <input id="apiKey" type="password" autocomplete="off" placeholder="Masukkan VEST_API_KEY">
-    <div class="muted">Kunci hanya disimpan selama tab ini terbuka.</div>
     <label for="distance">Jarak sensor ultrasonik (meter, opsional)</label>
     <input id="distance" type="number" min="0.03" max="3" step="0.01" placeholder="Kosongkan jika tanpa sensor">
     <video id="camera" autoplay playsinline muted></video>
     <button id="start">Aktifkan kamera belakang</button>
-    <button id="capture" disabled>Deteksi dan bacakan peringatan</button>
+    <button id="testAudio" type="button">Tes suara Ardi</button>
+    <button id="capture" disabled>Deteksi dan putar suara Ardi</button>
+    <button id="repeatAudio" type="button" disabled>Putar ulang suara terakhir</button>
+    <div class="muted">Halaman ini membuat sesi aman otomatis, jadi Anda tidak perlu memasukkan API key. Tekan Tes suara Ardi sekali dan pastikan volume ponsel aktif.</div>
   </section>
   <section class="card">
-    <div id="status" class="status" role="status">Masukkan kunci API dan aktifkan kamera.</div>
+    <div id="status" class="status" role="status">Aktifkan kamera, lalu tekan tombol deteksi.</div>
     <div id="result"></div>
   </section>
   <script>
-    const apiKey = document.querySelector("#apiKey");
     const distance = document.querySelector("#distance");
     const camera = document.querySelector("#camera");
     const startButton = document.querySelector("#start");
+    const testAudioButton = document.querySelector("#testAudio");
     const captureButton = document.querySelector("#capture");
+    const repeatAudioButton = document.querySelector("#repeatAudio");
     const statusBox = document.querySelector("#status");
     const resultBox = document.querySelector("#result");
-    apiKey.value = sessionStorage.getItem("vestcare-api-key") || "";
-    apiKey.addEventListener("change", () => sessionStorage.setItem("vestcare-api-key", apiKey.value.trim()));
+
+    const silentWav = "data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==";
+    const audio = new Audio();
+    audio.preload = "auto";
+
     let stream;
+    let lastPlan = null;
+    let audioUnlocked = false;
+    let audioToken = 0;
 
     function setStatus(message, failed = false) {
       statusBox.textContent = message;
       statusBox.classList.toggle("error", failed);
     }
 
+    async function unlockAudio() {
+      if (audioUnlocked) return;
+      try {
+        audio.src = silentWav;
+        await audio.play();
+        audio.pause();
+        audio.currentTime = 0;
+        audioUnlocked = true;
+      } catch (error) {
+        // Beberapa browser baru mengizinkan audio setelah tombol ditekan lagi.
+      }
+    }
+
+    function stopAudio() {
+      audioToken += 1;
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+    }
+
+    function playUrl(url) {
+      return new Promise((resolve, reject) => {
+        function bersihkan() {
+          audio.removeEventListener("ended", selesai);
+          audio.removeEventListener("error", gagal);
+        }
+        function selesai() {
+          bersihkan();
+          resolve();
+        }
+        function gagal() {
+          bersihkan();
+          reject(new Error("berkas suara tidak dapat diputar"));
+        }
+        audio.addEventListener("ended", selesai);
+        audio.addEventListener("error", gagal);
+        audio.src = url;
+        const promise = audio.play();
+        if (promise) promise.catch(error => {
+          bersihkan();
+          reject(error);
+        });
+      });
+    }
+
+    async function playPlan(plan, { test = false } = {}) {
+      if (!plan || !Array.isArray(plan.segmen) || !plan.segmen.length) {
+        setStatus("Klip suara Ardi tidak tersedia untuk hasil ini.", true);
+        return;
+      }
+      stopAudio();
+      const token = audioToken;
+      setStatus(test
+        ? "Memutar contoh suara Ardi..."
+        : `Memutar peringatan ${plan.level} dengan suara Ardi...`);
+      try {
+        for (const segmen of plan.segmen) {
+          if (token !== audioToken) return;
+          await playUrl(segmen.url);
+        }
+        if (token !== audioToken) return;
+        setStatus(test
+          ? "Tes suara Ardi selesai. Suara siap dipakai."
+          : `Peringatan ${plan.level} selesai diputar.`);
+      } catch (error) {
+        if (token !== audioToken) return;
+        setStatus(`Suara gagal diputar: ${error.message}. Tekan Tes suara Ardi lalu coba lagi.`, true);
+      }
+    }
+
+    function renderResult(body) {
+      const detections = body.deteksi || [];
+      resultBox.replaceChildren();
+      const heading = document.createElement("div");
+      heading.className = "urgent";
+      heading.textContent = `${body.level_tertinggi} - urgensi ${body.urgensi_tertinggi}/100`;
+      resultBox.append(heading);
+      if (body.suara && body.suara.teks) {
+        const sound = document.createElement("div");
+        sound.className = "sound";
+        sound.textContent = `Suara Ardi: ${body.suara.teks}`;
+        resultBox.append(sound);
+      }
+      if (!detections.length) {
+        const item = document.createElement("p");
+        item.textContent = "Tidak ada rintangan yang terdeteksi.";
+        resultBox.append(item);
+      }
+      for (const detection of detections) {
+        const item = document.createElement("div");
+        item.className = "item";
+        item.textContent = `${detection.level} | ${detection.kelas} ${detection.arah} | ${Number(detection.jarak_m).toFixed(1)} m | confidence ${Math.round(detection.conf * 100)}%`;
+        resultBox.append(item);
+      }
+    }
+
     startButton.addEventListener("click", async () => {
+      void unlockAudio();
       try {
         if (!navigator.mediaDevices?.getUserMedia) {
           throw new Error("Browser perlu HTTPS dan izin kamera.");
@@ -65,42 +170,36 @@
           video: { facingMode: { ideal: "environment" } }, audio: false
         });
         camera.srcObject = stream;
+        await camera.play();
         captureButton.disabled = false;
-        setStatus("Kamera aktif. Arahkan ke jalur di depan.");
+        setStatus("Kamera aktif. Arahkan ke jalur di depan, lalu tekan deteksi.");
       } catch (error) {
         setStatus(`Kamera tidak dapat dibuka: ${error.message}`, true);
       }
     });
 
-    function speak(report) {
-      if (!("speechSynthesis" in window)) {
-        setStatus("Browser ini tidak mendukung suara otomatis; hasil deteksi tetap tampil.", true);
-        return;
+    testAudioButton.addEventListener("click", async () => {
+      testAudioButton.disabled = true;
+      try {
+        await unlockAudio();
+        setStatus("Mengambil contoh suara Ardi...");
+        const response = await fetch("/suara/pratinjau");
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`);
+        await playPlan(body.suara, { test: true });
+      } catch (error) {
+        setStatus(`Tes suara gagal: ${error.message}`, true);
+      } finally {
+        testAudioButton.disabled = false;
       }
-      const detections = report.deteksi || [];
-      let phrase;
-      if (!detections.length) {
-        phrase = "Jalur aman. Tidak ada rintangan terdeteksi.";
-      } else {
-        const top = detections[0];
-        const directions = { kiri: "di sebelah kiri", kanan: "di sebelah kanan", depan: "di depan" };
-        phrase = `${top.level}. ${top.kelas} ${directions[top.arah] || "di depan"}, sekitar ${Number(top.jarak_m).toFixed(1)} meter.`;
-        if (top.level === "BAHAYA") phrase = `Awas. ${phrase} Segera berhenti dan cari jalur aman.`;
-      }
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(phrase);
-      utterance.lang = "id-ID";
-      utterance.rate = 0.95;
-      window.speechSynthesis.speak(utterance);
-    }
+    });
+
+    repeatAudioButton.addEventListener("click", () => {
+      void unlockAudio();
+      if (lastPlan) playPlan(lastPlan);
+    });
 
     captureButton.addEventListener("click", async () => {
-      const key = apiKey.value.trim();
-      if (!key) {
-        setStatus("Kunci API wajib diisi.", true);
-        apiKey.focus();
-        return;
-      }
       if (!camera.videoWidth || !camera.videoHeight) {
         setStatus("Menunggu kamera siap. Coba lagi.", true);
         return;
@@ -119,32 +218,22 @@
         const form = new FormData();
         form.append("gambar", blob, "kamera.jpg");
         if (distance.value !== "") form.append("jarak_m", distance.value);
-        const response = await fetch("/deteksi", {
-          method: "POST",
-          headers: { "X-API-Key": key },
-          body: form
-        });
-        const body = await response.json();
+        const response = await fetch("/deteksi", { method: "POST", body: form });
+        const body = await response.json().catch(() => ({}));
+        if (response.status === 401) {
+          setStatus("Sesi web kedaluwarsa. Memuat ulang halaman...", true);
+          setTimeout(() => location.reload(), 1200);
+          return;
+        }
         if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`);
-        const detections = body.deteksi || [];
-        resultBox.replaceChildren();
-        const heading = document.createElement("div");
-        heading.className = "urgent";
-        heading.textContent = `${body.level_tertinggi} - urgensi ${body.urgensi_tertinggi}/100`;
-        resultBox.append(heading);
-        if (!detections.length) {
-          const item = document.createElement("p");
-          item.textContent = "Tidak ada rintangan yang terdeteksi.";
-          resultBox.append(item);
+        renderResult(body);
+        lastPlan = body.suara || null;
+        repeatAudioButton.disabled = !lastPlan;
+        if (lastPlan) {
+          void playPlan(lastPlan);
+        } else {
+          setStatus("Deteksi selesai, tetapi klip suara Ardi tidak tersedia.", true);
         }
-        for (const detection of detections) {
-          const item = document.createElement("div");
-          item.className = "item";
-          item.textContent = `${detection.level} | ${detection.kelas} ${detection.arah} | ${Number(detection.jarak_m).toFixed(1)} m | confidence ${Math.round(detection.conf * 100)}%`;
-          resultBox.append(item);
-        }
-        setStatus("Analisis selesai. Suara peringatan diputar melalui ponsel.");
-        speak(body);
       } catch (error) {
         setStatus(`Deteksi gagal: ${error.message}`, true);
       } finally {

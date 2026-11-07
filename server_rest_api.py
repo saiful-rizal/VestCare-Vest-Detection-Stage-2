@@ -19,8 +19,9 @@ ENDPOINT
   GET  /status                        status server, model, dan pemutar suara
 
 AUTENTIKASI
-  Endpoint operasi selain /, /app, /docs, dan /status butuh header:
-  X-API-Key: <VEST_API_KEY>. Kunci acak minimal 32 karakter wajib dikonfigurasi.
+  Endpoint operasi butuh header X-API-Key: <VEST_API_KEY> atau cookie sesi
+  HttpOnly yang diterbitkan otomatis saat halaman /app dibuka. Kunci acak
+  minimal 32 karakter wajib dikonfigurasi.
 
 CARA JALANKAN
   pip install -r requirements.txt
@@ -40,7 +41,7 @@ UJI CEPAT (curl)
 KONFIGURASI (env var)
   VEST_API_KEY      kunci API
   VEST_MODEL_PATH   path bobot .pt          (default: models/best.pt)
-  VEST_SUARA_FOLDER folder pustaka klip suara (default: cache_suara)
+  VEST_SUARA_FOLDER folder pustaka klip suara (default: suara-natural-ai/cache_ardi)
   VEST_IMGSZ        ukuran gambar inferensi  (default: 416 - SAMAKAN dengan training!)
   VEST_CONF         ambang confidence        (default: 0.35)
   VEST_RIWAYAT_PATH file riwayat .jsonl     (default: data/riwayat.jsonl)
@@ -48,9 +49,11 @@ KONFIGURASI (env var)
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import hmac
 import os
+import secrets
 import time
 import uuid
 from datetime import datetime
@@ -82,6 +85,7 @@ from inferensi_vest import (  # noqa: E402
     DEFAULT_CONF,
     DEFAULT_IMGSZ,
 )
+from perencana_suara import PerencanaSuara  # noqa: E402
 
 # ---------- konfigurasi ----------
 API_KEY = os.environ.get("VEST_API_KEY", "").strip()
@@ -108,6 +112,20 @@ HOST = os.environ.get("VEST_HOST", "127.0.0.1")
 PORT = int(os.environ.get("VEST_PORT", "8000"))
 
 RIWAYAT_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+# ---------- sesi web + pustaka suara browser ----------
+COOKIE_SESI = "vestcare_sesi"
+UMUR_SESI_DETIK = 12 * 60 * 60
+
+try:
+    PERENCANA_SUARA: Optional[PerencanaSuara] = PerencanaSuara(SUARA_FOLDER)
+    print(
+        f"[SUARA] Pustaka browser siap: {SUARA_FOLDER} "
+        f"({len(PERENCANA_SUARA.tersedia)} kunci, penutur {PERENCANA_SUARA.penutur or '-'})"
+    )
+except Exception as e:
+    PERENCANA_SUARA = None
+    print(f"[PERINGATAN] Pustaka suara browser belum siap: {e}")
 
 # ---------- muat engine inferensi ----------
 ENGINE: Optional[InferensiVest] = None
@@ -137,17 +155,69 @@ app = FastAPI(
     version="2.0.0",
 )
 # ---------- autentikasi ----------
-def _cek_api_key(x_api_key: Optional[str]):
+def _buat_token_sesi() -> str:
+    kedaluwarsa = int(time.time()) + UMUR_SESI_DETIK
+    nonce = secrets.token_urlsafe(12)
+    pesan = f"vestcare:{kedaluwarsa}:{nonce}".encode("utf-8")
+    tanda = hmac.new(API_KEY.encode("utf-8"), pesan, hashlib.sha256).hexdigest()
+    return f"{kedaluwarsa}.{nonce}.{tanda}"
+
+
+def _token_sesi_valid(token: Optional[str]) -> bool:
+    if not token:
+        return False
+    bagian = token.split(".")
+    if len(bagian) != 3:
+        return False
+    kedaluwarsa_teks, nonce, tanda = bagian
+    try:
+        kedaluwarsa = int(kedaluwarsa_teks)
+    except ValueError:
+        return False
+    if kedaluwarsa < int(time.time()):
+        return False
+    pesan = f"vestcare:{kedaluwarsa}:{nonce}".encode("utf-8")
+    harapan = hmac.new(API_KEY.encode("utf-8"), pesan, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(tanda, harapan)
+
+
+def _pasang_cookie_sesi(response, request: Request) -> None:
+    protokol = request.headers.get("x-forwarded-proto", request.url.scheme)
+    https = protokol.split(",")[0].strip().lower() == "https"
+    response.set_cookie(
+        key=COOKIE_SESI,
+        value=_buat_token_sesi(),
+        max_age=UMUR_SESI_DETIK,
+        httponly=True,
+        secure=https,
+        samesite="lax",
+        path="/",
+    )
+
+
+def _cek_api_key(request: Request, x_api_key: Optional[str]):
     if not API_KEY_CONFIGURED:
         raise HTTPException(
             status_code=503,
             detail="API belum dikonfigurasi. Isi VEST_API_KEY dengan kunci acak minimal 32 karakter.",
         )
-    if not x_api_key or not hmac.compare_digest(
+    if x_api_key and hmac.compare_digest(
         x_api_key.encode("utf-8"),
         API_KEY.encode("utf-8"),
     ):
-        raise HTTPException(status_code=401, detail="X-API-Key salah atau tidak disertakan.")
+        return
+    if _token_sesi_valid(request.cookies.get(COOKIE_SESI)):
+        return
+    raise HTTPException(
+        status_code=401,
+        detail="X-API-Key atau sesi web salah atau tidak disertakan.",
+    )
+
+
+def _rencana_suara(data: dict) -> Optional[dict]:
+    if PERENCANA_SUARA is None:
+        return None
+    return PERENCANA_SUARA.susun(data.get("deteksi", []))
 
 
 def _pastikan_engine_siap():
@@ -224,7 +294,8 @@ def root():
         "model_exists": MODEL_PATH.exists(),
         "imgsz": IMGSZ,
         "conf": CONF,
-        "suara_browser": "Web Speech API (ponsel)",
+        "suara_browser": "klip Ardi (suara-natural-ai)",
+        "pustaka_suara_siap": PERENCANA_SUARA is not None,
         "suara_server": "nonaktif" if TANPA_SUARA else "aktif",
         "autentikasi": "aktif" if API_KEY_CONFIGURED else "belum dikonfigurasi",
         "dokumentasi": "/docs",
@@ -233,8 +304,45 @@ def root():
 
 
 @app.get("/app", include_in_schema=False)
-def aplikasi_browser():
-    return FileResponse(ROOT / "web" / "index.html")
+def aplikasi_browser(request: Request):
+    response = FileResponse(
+        ROOT / "web" / "index.html",
+        headers={"Cache-Control": "no-store"},
+    )
+    if API_KEY_CONFIGURED:
+        _pasang_cookie_sesi(response, request)
+    return response
+
+
+@app.get("/suara/pratinjau")
+def pratinjau_suara(
+    request: Request,
+    x_api_key: Optional[str] = Header(None),
+):
+    """Rencana suara contoh untuk tombol tes di halaman /app."""
+    _cek_api_key(request, x_api_key)
+    if PERENCANA_SUARA is None:
+        raise HTTPException(status_code=503, detail="Pustaka suara Ardi belum tersedia.")
+    rencana = PERENCANA_SUARA.contoh()
+    if rencana is None:
+        raise HTTPException(status_code=404, detail="Klip contoh tidak tersedia.")
+    return {"suara": rencana}
+
+
+@app.get("/suara/{nama_berkas}", include_in_schema=False)
+def berkas_suara(
+    nama_berkas: str,
+    request: Request,
+    x_api_key: Optional[str] = Header(None),
+):
+    _cek_api_key(request, x_api_key)
+    if PERENCANA_SUARA is None or not PERENCANA_SUARA.berkas_diizinkan(nama_berkas):
+        raise HTTPException(status_code=404, detail="Berkas suara tidak ditemukan.")
+    return FileResponse(
+        SUARA_FOLDER / nama_berkas,
+        media_type="audio/mpeg",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
 
 
 @app.get("/status")
@@ -245,36 +353,43 @@ def status():
         "versi": "2.0.0",
         "engine_siap": ENGINE is not None,
         "api_terproteksi": API_KEY_CONFIGURED,
+        "pustaka_suara_siap": PERENCANA_SUARA is not None,
         "waktu_server": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
 
 @app.post("/deteksi")
 async def deteksi(
+    request: Request,
     gambar: UploadFile = File(..., description="file gambar (jpg/png) dari rompi/klien"),
     jarak_m: Optional[float] = Form(None, ge=0.03, le=3.0, description="jarak ultrasonik depan dalam METER"),
     x_api_key: Optional[str] = Header(None),
 ):
-    _cek_api_key(x_api_key)
+    _cek_api_key(request, x_api_key)
     img = await _baca_gambar(gambar)
 
     hasil = _jalankan_deteksi(img, jarak_m, putar_suara=False)
-    entri = _simpan_riwayat(ENGINE.ke_dict(hasil), sumber="deteksi")
+    data = ENGINE.ke_dict(hasil)
+    data["suara"] = _rencana_suara(data)
+    entri = _simpan_riwayat(data, sumber="deteksi")
     return JSONResponse(entri)
 
 
 @app.post("/deteksi/suara")
 async def deteksi_suara(
+    request: Request,
     gambar: UploadFile = File(..., description="file gambar (jpg/png) dari rompi/klien"),
     jarak_m: Optional[float] = Form(None, ge=0.03, le=3.0, description="jarak ultrasonik depan dalam METER"),
     x_api_key: Optional[str] = Header(None),
 ):
     """Deteksi + putar suara peringatan di server (speaker rompi)."""
-    _cek_api_key(x_api_key)
+    _cek_api_key(request, x_api_key)
     img = await _baca_gambar(gambar)
 
     hasil = _jalankan_deteksi(img, jarak_m, putar_suara=True)
-    entri = _simpan_riwayat(ENGINE.ke_dict(hasil), sumber="deteksi_suara")
+    data = ENGINE.ke_dict(hasil)
+    data["suara"] = _rencana_suara(data)
+    entri = _simpan_riwayat(data, sumber="deteksi_suara")
     return JSONResponse(entri)
 
 
@@ -284,9 +399,9 @@ class MasukanFuzzy(BaseModel):
 
 
 @app.post("/peringatan")
-def peringatan(m: MasukanFuzzy, x_api_key: Optional[str] = Header(None)):
+def peringatan(m: MasukanFuzzy, request: Request, x_api_key: Optional[str] = Header(None)):
     """Fuzzy Sugeno berdiri sendiri: tidak butuh model/gambar."""
-    _cek_api_key(x_api_key)
+    _cek_api_key(request, x_api_key)
     from fuzzysugeno import hitung_peringatan
     return {"skor_risiko": m.skor_risiko, "jarak_m": m.jarak_m,
             "peringatan": hitung_peringatan(m.skor_risiko, m.jarak_m)}
@@ -294,10 +409,11 @@ def peringatan(m: MasukanFuzzy, x_api_key: Optional[str] = Header(None)):
 
 @app.get("/riwayat")
 def riwayat(
+    request: Request,
     limit: int = Query(20, ge=1, le=500, description="jumlah entri terakhir yang diambil"),
     x_api_key: Optional[str] = Header(None),
 ):
-    _cek_api_key(x_api_key)
+    _cek_api_key(request, x_api_key)
     return _baca_riwayat(limit)
 
 

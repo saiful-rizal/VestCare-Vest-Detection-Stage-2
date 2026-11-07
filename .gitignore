@@ -48,7 +48,6 @@ dataset_pohon/
 # models/*.pt
 
 # Cache suara (dihasilkan oleh siapkan_pustaka.py)
-suara-natural-ai/cache_ardi/
 suara-natural-ai/cache_suara/
 suara-natural-ai/cache_gadis/
 suara-natural-ai/*.wav

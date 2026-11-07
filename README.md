@@ -277,17 +277,18 @@ YOLO26n-Seg  (models/best.pt)  ->  box, mask, kelas, confidence
 Fuzzy Sugeno  (fuzzysugeno.py)  ->  urgensi 0-100
         |
         v
-AMAN / INFO / WASPADA / BAHAYA  ->  JSON, getaran, pesan suara
+AMAN / INFO / WASPADA / BAHAYA  ->  JSON, getaran, rencana suara Ardi
         |
         v
-Browser ponsel: Web Speech API (id-ID)  atau  PemutarPeringatan di server
+Browser /app: klip MP3 cache_ardi berurutan  atau  PemutarPeringatan di server
 ```
 
 Pipeline CLI terdapat di [`inferensi_vest.py`](inferensi_vest.py). Pipeline ini
 menjalankan YOLO, memanggil `analisis_hasil` dari `fuzzysugeno.py`, lalu
 memutar peringatan melalui `PemutarPeringatan` atau fallback TTS `edge-tts`.
 Server FastAPI terdapat di [`server_rest_api.py`](server_rest_api.py) dan
-memakai pipeline yang sama.
+memakai pipeline yang sama. Untuk browser, [`perencana_suara.py`](perencana_suara.py)
+menyusun segmen klip Ardi tanpa membutuhkan pygame atau speaker server.
 
 ### 7.2 Fuzzy Sugeno
 
@@ -320,21 +321,24 @@ objek keluar dari frame.
 
 ### 7.3 Endpoint API
 
-| Endpoint | Kegunaan | Kunci API |
+| Endpoint | Kegunaan | Autentikasi |
 |---|---|---|
-| `GET /app` | Halaman kamera, hasil fuzzy, dan suara browser | Tidak |
+| `GET /app` | Halaman kamera, hasil fuzzy, dan suara Ardi | Tidak |
 | `GET /` | Informasi singkat dan status model | Tidak |
 | `GET /status` | Health check proses, model, dan suara | Tidak |
 | `GET /docs` | Dokumentasi interaktif FastAPI | Tidak |
-| `POST /deteksi` | Gambar dan jarak opsional, menghasilkan JSON deteksi dan urgensi | Wajib |
-| `POST /deteksi/suara` | Deteksi dan opsi pemutaran suara di server | Wajib |
-| `POST /peringatan` | Perhitungan fuzzy tanpa gambar | Wajib |
-| `GET /riwayat` | Riwayat deteksi dalam format JSONL | Wajib |
+| `POST /deteksi` | Gambar dan jarak opsional, menghasilkan JSON deteksi, urgensi, dan rencana suara | Header atau cookie |
+| `POST /deteksi/suara` | Deteksi dan opsi pemutaran suara di server | Header atau cookie |
+| `POST /peringatan` | Perhitungan fuzzy tanpa gambar | Header atau cookie |
+| `GET /riwayat` | Riwayat deteksi dalam format JSONL | Header atau cookie |
+| `GET /suara/pratinjau` | Rencana suara contoh untuk tes browser | Header atau cookie |
+| `GET /suara/{berkas}` | Berkas MP3 Ardi untuk browser | Header atau cookie |
 
-Endpoint operasi memerlukan header `X-API-Key` yang nilainya sama dengan
-`VEST_API_KEY` di `.env`. Kunci wajib berupa string acak minimal 32 karakter.
-Unggahan gambar dibatasi 10 MB. Server secara default hanya mendengarkan di
-`127.0.0.1:8000`.
+Endpoint operasi menerima header `X-API-Key` yang nilainya sama dengan
+`VEST_API_KEY` di `.env`, atau cookie sesi `HttpOnly` yang diterbitkan otomatis
+oleh `/app`. Pengguna web tidak perlu memasukkan kunci. Kunci wajib berupa string
+acak minimal 32 karakter. Unggahan gambar dibatasi 10 MB. Server secara default
+hanya mendengarkan di `127.0.0.1:8000`.
 
 Dokumentasi API publik, contoh permintaan, kode error, dan panduan Cloudflare
 Tunnel tersedia di [`API_CLOUDFLARE.md`](API_CLOUDFLARE.md).
@@ -458,6 +462,7 @@ VestCare-Vest-Detection-Stage-2/
 ├── inferensi_vest.py                 pipeline YOLO, fuzzy, dan suara
 ├── fuzzysugeno.py                    fuzzy Sugeno dan aturan urgensi
 ├── server_rest_api.py                server FastAPI
+├── perencana_suara.py                penyusun segmen klip Ardi untuk browser
 ├── app.py                            entry point ASGI untuk `uvicorn app:app`
 ├── config_env.py                     pembaca file .env
 ├── start_server.py                   starter server dengan validasi kunci
@@ -467,12 +472,13 @@ VestCare-Vest-Detection-Stage-2/
 ├── start_all.bat                     menjalankan server dan tunnel
 ├── cloudflared.yml                   konfigurasi Cloudflare Tunnel
 ├── web/
-│   └── index.html                    halaman kamera dan suara browser
+│   └── index.html                    halaman kamera dan pemutar klip Ardi
 ├── models/
 │   ├── best.pt                       bobot terbaik untuk inferensi
 │   └── best_semua_kelas.pt           salinan bobot semua kelas
 ├── yolo26n-seg.pt                    bobot pralatih Ultralytics
 ├── suara-natural-ai/                 modul suara dan pemutar peringatan
+│   └── cache_ardi/                   pustaka 101 klip MP3 Ardi + manifest
 ├── runs/segment/runs/semua_kelas_yolo26n/
 │   ├── weights/best.pt               bobot hasil training
 │   ├── weights/last.pt               bobot epoch terakhir
@@ -584,8 +590,9 @@ Server dan Cloudflare Tunnel sekaligus:
 
 Tanpa `CLOUDFLARED_TOKEN`, tunnel memakai Quick Tunnel dengan URL sementara.
 Dengan token, tunnel berjalan sebagai tunnel terkelola. Setelah URL HTTPS
-muncul, buka URL tersebut dengan akhiran `/app`, masukkan `VEST_API_KEY`, lalu
-izinkan akses kamera dan suara di ponsel.
+muncul, buka URL tersebut dengan akhiran `/app`, izinkan akses kamera dan suara
+di ponsel, lalu tekan tombol tes suara Ardi. Halaman tidak meminta API key karena
+sesi web dibuat otomatis.
 
 ---
 

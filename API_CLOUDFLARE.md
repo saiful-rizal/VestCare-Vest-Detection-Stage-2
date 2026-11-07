@@ -12,7 +12,7 @@ server karena membutuhkan `models/best.pt` dan proses Python.
 URL Quick Tunnel yang aktif saat dokumen ini dibuat:
 
 ```
-https://subsidiary-sorts-insurance-lid.trycloudflare.com
+https://well-consists-ana-touch.trycloudflare.com
 ```
 
 URL Quick Tunnel bersifat sementara dan berubah setiap kali tunnel dijalankan
@@ -47,7 +47,21 @@ perlu dibuka di firewall dan tidak perlu alamat IP publik.
 
 ## 3. Autentikasi
 
-Endpoint operasi memakai header:
+Ada dua cara mengakses endpoint operasi.
+
+### 3.1 Halaman web `/app` tanpa API key
+
+Saat pengguna membuka `/app`, server menerbitkan cookie sesi `vestcare_sesi`
+yang ditandatangani HMAC memakai `VEST_API_KEY`. Cookie bersifat `HttpOnly`,
+`SameSite=Lax`, berlaku 12 jam, dan otomatis memakai atribut `Secure` bila
+diakses melalui HTTPS (termasuk Cloudflare Tunnel).
+
+Browser memakai cookie tersebut secara otomatis untuk `/deteksi`, `/riwayat`,
+dan `/suara/...`. Pengguna ponsel tidak perlu mengetik API key.
+
+### 3.2 Klien API dengan header
+
+Klien non-browser memakai header:
 
 ```
 X-API-Key: <VEST_API_KEY>
@@ -62,9 +76,10 @@ Contoh header yang benar:
 $headers = @{ "X-API-Key" = "KUNCI_API_ANDA" }
 ```
 
-Jangan membagikan `.env`, kunci API, atau URL tunnel secara publik. URL Quick
-Tunnel dapat diakses siapa saja yang mengetahui alamatnya, tetapi operasi tetap
-memerlukan kunci API.
+Jangan membagikan `.env` atau kunci API. Karena `/app` menerbitkan sesi tanpa
+meminta kunci, URL publik `/app` harus diperlakukan seperti kunci: siapa pun
+yang mengetahui alamatnya dapat membuka halaman kamera. Untuk produksi,
+lindungi dengan Cloudflare Access atau batasi akses di named tunnel.
 
 ## 4. Daftar endpoint
 
@@ -75,11 +90,14 @@ memerlukan kunci API.
 | GET | `/status` | Tidak | Health check ringan |
 | GET | `/docs` | Tidak | Dokumentasi interaktif Swagger UI |
 | GET | `/redoc` | Tidak | Dokumentasi ReDoc |
-| POST | `/deteksi` | Ya | Deteksi gambar dan hitung urgensi |
+| POST | `/deteksi` | Ya | Deteksi gambar, hitung urgensi, dan susun rencana suara |
 | POST | `/deteksi/suara` | Ya | Deteksi dan putar suara di server |
 | POST | `/peringatan` | Ya | Hitung fuzzy tanpa gambar |
 | GET | `/riwayat` | Ya | Baca riwayat deteksi |
+| GET | `/suara/pratinjau` | Ya | Rencana suara contoh untuk tes di `/app` |
+| GET | `/suara/{berkas}` | Ya | Unduh satu klip MP3 Ardi |
 
+Autentikasi "Ya" menerima header `X-API-Key` atau cookie sesi dari `/app`.
 Batas unggahan gambar adalah 10 MB dan 40 megapiksel. Parameter `jarak_m` pada
 `/deteksi` memiliki rentang 0.03 sampai 3.0 meter.
 
@@ -88,7 +106,7 @@ Batas unggahan gambar adalah 10 MB dan 40 megapiksel. Parameter `jarak_m` pada
 ### 5.1 Health check
 
 ```powershell
-curl.exe https://subsidiary-sorts-insurance-lid.trycloudflare.com/status
+curl.exe https://well-consists-ana-touch.trycloudflare.com/status
 ```
 
 Respons:
@@ -99,6 +117,7 @@ Respons:
   "versi": "2.0.0",
   "engine_siap": true,
   "api_terproteksi": true,
+  "pustaka_suara_siap": true,
   "waktu_server": "2026-11-07 10:09:40"
 }
 ```
@@ -106,7 +125,7 @@ Respons:
 ### 5.2 Fuzzy tanpa gambar
 
 ```powershell
-curl.exe -X POST https://subsidiary-sorts-insurance-lid.trycloudflare.com/peringatan `
+curl.exe -X POST https://well-consists-ana-touch.trycloudflare.com/peringatan `
   -H "X-API-Key: KUNCI_API_ANDA" `
   -H "Content-Type: application/json" `
   -d "{\"skor_risiko\":0.9,\"jarak_m\":1.0}"
@@ -134,7 +153,7 @@ Respons:
 ### 5.3 Deteksi gambar
 
 ```powershell
-curl.exe -X POST https://subsidiary-sorts-insurance-lid.trycloudflare.com/deteksi `
+curl.exe -X POST https://well-consists-ana-touch.trycloudflare.com/deteksi `
   -H "X-API-Key: KUNCI_API_ANDA" `
   -F "gambar=@foto_jalan.jpg" `
   -F "jarak_m=0.8"
@@ -152,6 +171,31 @@ Respons ringkas:
   "urgensi_tertinggi": 40.0,
   "aksi_suara": null,
   "suara_diputar": false,
+  "suara": {
+    "level": "INFO",
+    "teks": "lubang tepat di depan kira-kira satu meter Kurangi kecepatan dan berjalanlah lebih pelan",
+    "aksi": "pelan",
+    "segmen": [
+      {
+        "kunci": "benda_lubang_depan_netral",
+        "teks": "lubang tepat di depan",
+        "berkas": "benda_lubang_depan_netral_3.mp3",
+        "url": "/suara/benda_lubang_depan_netral_3.mp3"
+      },
+      {
+        "kunci": "jarak_10",
+        "teks": "kira-kira satu meter",
+        "berkas": "jarak_10_2.mp3",
+        "url": "/suara/jarak_10_2.mp3"
+      },
+      {
+        "kunci": "solusi_pelan",
+        "teks": "Kurangi kecepatan dan berjalanlah lebih pelan",
+        "berkas": "solusi_pelan_1.mp3",
+        "url": "/suara/solusi_pelan_1.mp3"
+      }
+    ]
+  },
   "deteksi": [
     {
       "kelas": "lubang",
@@ -175,20 +219,21 @@ Respons ringkas:
 ### 5.4 Deteksi dan suara server
 
 ```powershell
-curl.exe -X POST https://subsidiary-sorts-insurance-lid.trycloudflare.com/deteksi/suara `
+curl.exe -X POST https://well-consists-ana-touch.trycloudflare.com/deteksi/suara `
   -H "X-API-Key: KUNCI_API_ANDA" `
   -F "gambar=@foto_jalan.jpg" `
   -F "jarak_m=0.8"
 ```
 
 Endpoint ini hanya memutar suara jika `VEST_TANPA_SUARA=0` dan perangkat server
-memiliki speaker serta FFmpeg. Untuk penggunaan di ponsel, gunakan `/app` dan
-biarkan browser membacakan peringatan melalui Web Speech API.
+memiliki speaker serta FFmpeg. Untuk penggunaan di ponsel, gunakan `/app`:
+browser memutar klip Ardi dari `suara-natural-ai/cache_ardi` sesuai rencana
+suara pada respons `/deteksi`.
 
 ### 5.5 Riwayat deteksi
 
 ```powershell
-curl.exe "https://subsidiary-sorts-insurance-lid.trycloudflare.com/riwayat?limit=20" `
+curl.exe "https://well-consists-ana-touch.trycloudflare.com/riwayat?limit=20" `
   -H "X-API-Key: KUNCI_API_ANDA"
 ```
 
@@ -199,12 +244,16 @@ Respons berisi `total`, `ditampilkan`, dan `data` berupa entri terbaru.
 Buka:
 
 ```
-https://subsidiary-sorts-insurance-lid.trycloudflare.com/app
+https://well-consists-ana-touch.trycloudflare.com/app
 ```
 
-Masukkan `VEST_API_KEY`, izinkan kamera dan mikrofon bila diminta, lalu arahkan
-kamera ke jalan. Browser akan mengirim gambar ke `/deteksi` dan membacakan
-peringatan.
+Tidak perlu memasukkan API key. Server menerbitkan cookie sesi saat halaman
+dibuka. Tekan **Aktifkan kamera belakang**, izinkan kamera, lalu tekan
+**Deteksi dan putar suara Ardi**. Browser mengirim gambar ke `/deteksi` dan
+memutar segmen MP3 Ardi sesuai level fuzzy (AMAN, INFO, WASPADA, atau BAHAYA).
+
+Tekan **Tes suara Ardi** sekali untuk membuka izin audio browser. Tombol
+**Putar ulang suara terakhir** mengulang rencana suara dari deteksi terakhir.
 
 ## 6. Format respons deteksi
 
@@ -231,21 +280,53 @@ Tingkat urgensi:
 | WASPADA | 50 sampai kurang dari 75 |
 | BAHAYA | 75 sampai 100 |
 
+### 6.1 Rencana suara Ardi
+
+Respons `/deteksi` dan `/deteksi/suara` memiliki field `suara`. Nilainya `null`
+jika pustaka `suara-natural-ai/cache_ardi` belum siap, dan berisi objek berikut
+jika tersedia:
+
+| Field | Tipe | Keterangan |
+|---|---|---|
+| `level` | string | level fuzzy yang dipakai: AMAN, INFO, WASPADA, atau BAHAYA |
+| `teks` | string | gabungan teks seluruh segmen |
+| `aksi` | string | aksi yang dipilih, misalnya `pelan`, `berhenti`, atau `lurus` |
+| `segmen` | array | daftar klip yang harus diputar berurutan |
+
+Setiap segmen memiliki field:
+
+| Field | Tipe | Keterangan |
+|---|---|---|
+| `kunci` | string | kunci manifest, misalnya `awal_bahaya` atau `jarak_10` |
+| `teks` | string | teks klip |
+| `berkas` | string | nama berkas MP3 di `cache_ardi` |
+| `url` | string | URL relatif untuk memutar klip melalui `/suara/{berkas}` |
+
+Urutan segmen mengikuti aturan fuzzy dan pustaka Ardi. Contoh untuk BAHAYA:
+
+```text
+awal_bahaya -> benda_lubang_depan_netral -> jarak_05 -> solusi_berhenti
+```
+
+Untuk level AMAN, rencana berisi klip `jalur_aman`. Varian klip dipilih acak
+oleh server agar suara tidak selalu sama.
+
 ## 7. Kode error
 
 | Kode | Penyebab |
 |---|---|
 | 400 | File gambar tidak valid atau tidak bisa dibaca |
-| 401 | `X-API-Key` salah atau tidak disertakan |
+| 401 | `X-API-Key` atau cookie sesi salah/tidak disertakan |
+| 404 | Berkas suara tidak ada di pustaka |
 | 413 | Gambar melebihi 10 MB atau 40 megapiksel |
 | 422 | Body JSON atau parameter query tidak valid |
-| 503 | `VEST_API_KEY` belum dikonfigurasi atau engine model belum siap |
+| 503 | `VEST_API_KEY` belum dikonfigurasi, engine model belum siap, atau pustaka suara belum siap |
 
 Contoh respons 401:
 
 ```json
 {
-  "detail": "X-API-Key salah atau tidak disertakan."
+  "detail": "X-API-Key atau sesi web salah atau tidak disertakan."
 }
 ```
 
@@ -317,10 +398,42 @@ Cloudflare, bukan URL `trycloudflare.com` sementara.
 1. Gunakan kunci API acak minimal 32 karakter. Jangan memakai contoh di
    `.env.example`.
 2. Jangan commit `.env` atau membagikan isinya.
-3. Quick Tunnel tidak memberikan autentikasi tambahan. Kunci API tetap wajib.
-4. Untuk produksi, gunakan named tunnel, batasi akses dengan Cloudflare Access
-   bila perlu, dan aktifkan logging.
+3. Quick Tunnel tidak memberikan autentikasi tambahan. Endpoint API tetap
+   memerlukan `X-API-Key`, tetapi `/app` menerbitkan cookie sesi tanpa meminta
+   kunci. Perlakukan URL `/app` sebagai rahasia dan gunakan Cloudflare Access
+   untuk produksi.
+4. Untuk produksi, gunakan named tunnel, batasi akses dengan Cloudflare Access,
+   dan aktifkan logging.
 5. Batasi ukuran unggahan dan lakukan validasi gambar di sisi klien sebelum
    mengirim ke API.
 6. Ganti kunci API secara berkala dan pantau endpoint `/status` untuk memastikan
-   engine model tetap siap.
+   engine model serta pustaka suara tetap siap.
+7. Cookie sesi ditandatangani HMAC dan tidak dapat dipalsukan tanpa
+   `VEST_API_KEY`. Cookie tetap `HttpOnly` agar tidak dapat dibaca JavaScript.
+
+## 10. Pustaka suara Ardi
+
+Klip suara berada di:
+
+```text
+suara-natural-ai/cache_ardi/
+├── manifest.json
+├── awal_bahaya_1.mp3
+├── awal_waspada_1.mp3
+├── benda_lubang_depan_netral_1.mp3
+├── jarak_10_1.mp3
+├── solusi_berhenti_1.mp3
+└── ...
+```
+
+Folder ini disertakan di repositori agar `/app` langsung dapat memutar suara
+Ardi. `manifest.json` berisi 38 kunci pesan untuk level, kelas, arah, jarak, dan
+solusi. Jika pustaka dibuat ulang dengan `siapkan_pustaka.py`, sesuaikan
+`VEST_SUARA_FOLDER` di `.env`:
+
+```text
+VEST_SUARA_FOLDER=suara-natural-ai/cache_ardi
+```
+
+Server memilih klip tanpa membutuhkan pygame atau speaker. Browser memutar
+berkas MP3 melalui endpoint `/suara/{berkas}` menggunakan cookie sesi.

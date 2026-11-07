@@ -330,7 +330,7 @@ Bobot model juga disalin ke `models/best.pt` dan
 Inferensi langsung dengan webcam:
 
 ```powershell
-.\.venv\Scripts\python.exe inferensi_vest.py --source 0 --model models\best.pt --suara cache_suara
+.\.venv\Scripts\python.exe inferensi_vest.py --source 0 --model models\best.pt --suara suara-natural-ai\cache_ardi
 ```
 
 Melalui server FastAPI:

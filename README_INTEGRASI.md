@@ -1,15 +1,16 @@
 # Integrasi VestCare: YOLO, Fuzzy, Suara Browser, FastAPI, dan Cloudflare
 
-Model lima kelas menganalisis gambar, hasil deteksi dinilai oleh fuzzy Sugeno, lalu browser di ponsel membacakan urgensi menggunakan Web Speech API. FastAPI menyajikan aplikasi dan API; Cloudflare Tunnel menyediakan HTTPS untuk akses kamera ponsel dari luar jaringan lokal.
+Model lima kelas menganalisis gambar, hasil deteksi dinilai oleh fuzzy Sugeno, lalu browser di ponsel memutar klip suara Ardi dari `suara-natural-ai/cache_ardi` sesuai tingkat urgensi. FastAPI menyajikan aplikasi dan API; Cloudflare Tunnel menyediakan HTTPS untuk akses kamera ponsel dari luar jaringan lokal.
 
 ## Alur sistem
 
-1. Kamera ponsel mengirim gambar ke `POST /deteksi`.
+1. Kamera ponsel mengirim gambar ke `POST /deteksi` memakai cookie sesi dari `/app`.
 2. YOLO memproses lima kelas: `pohon`, `mobil`, `motor`, `orang`, `lubang`.
 3. Fuzzy Sugeno menghitung skor urgensi berdasarkan kelas, jarak, dan posisi objek.
-4. API mengembalikan hasil JSON; halaman `/app` menampilkan hasil dan membacakan peringatan di ponsel.
+4. API mengembalikan hasil JSON beserta rencana `suara`: daftar segmen klip Ardi yang sesuai level fuzzy.
+5. Halaman `/app` menampilkan hasil dan memutar segmen MP3 tersebut secara berurutan.
 
-Suara browser adalah keluaran utama. Server tidak memutar suara secara default. Endpoint opsional `POST /deteksi/suara` hanya memutar suara jika `VEST_TANPA_SUARA=0` dan perangkat server mendukungnya.
+Suara browser adalah keluaran utama dan memakai klip Ardi, bukan Web Speech API. Server tidak memutar suara secara default. Endpoint opsional `POST /deteksi/suara` hanya memutar suara jika `VEST_TANPA_SUARA=0` dan perangkat server mendukungnya.
 
 ## Persiapan
 
@@ -42,7 +43,7 @@ Alternatif menjalankan langsung dengan Uvicorn:
 .\.venv\Scripts\python.exe -m uvicorn app:app --host 127.0.0.1 --port 8000
 ```
 
-Buka `http://127.0.0.1:8000/app` di ponsel pada jaringan yang sama, atau di komputer yang menjalankan server. Dokumentasi API ada di `http://127.0.0.1:8000/docs`. Browser memerlukan HTTPS untuk kamera jarak jauh; `localhost` dapat dipakai untuk pengujian lokal.
+Buka `http://127.0.0.1:8000/app` di komputer yang menjalankan server. Untuk ponsel, gunakan URL HTTPS Cloudflare pada bagian berikutnya. Dokumentasi API ada di `http://127.0.0.1:8000/docs`. Browser memerlukan HTTPS untuk kamera jarak jauh; `localhost` dapat dipakai untuk pengujian lokal.
 
 Untuk Cloudflare Tunnel, pasang `cloudflared` dan opsional atur `CLOUDFLARED_TOKEN` di `.env`. Tanpa token, runner menggunakan Quick Tunnel dengan URL sementara. Jalankan:
 
@@ -50,23 +51,35 @@ Untuk Cloudflare Tunnel, pasang `cloudflared` dan opsional atur `CLOUDFLARED_TOK
 .\start_all.bat
 ```
 
-Launcher memulai API hanya pada `127.0.0.1`, menunggu pemeriksaan status berhasil, kemudian menjalankan tunnel. Buka URL HTTPS yang dicetak Cloudflare dengan akhiran `/app`, masukkan `VEST_API_KEY`, lalu izinkan akses kamera dan suara.
+Launcher memulai API hanya pada `127.0.0.1`, menunggu pemeriksaan status berhasil, kemudian menjalankan tunnel. Buka URL HTTPS yang dicetak Cloudflare dengan akhiran `/app`, lalu izinkan akses kamera dan suara. Halaman tidak meminta API key karena server menerbitkan cookie sesi otomatis.
+
+Pada halaman `/app`, ikuti urutan ini di ponsel:
+
+1. Tekan **Tes suara Ardi** dan pastikan suara tes terdengar; naikkan volume media jika perlu.
+2. Tekan **Aktifkan kamera belakang** dan izinkan akses kamera.
+3. Tekan **Deteksi dan putar suara Ardi**. Hasil deteksi, level fuzzy, dan teks suara tampil di halaman.
+4. Suara Ardi diputar otomatis sesuai level: AMAN, INFO, WASPADA, atau BAHAYA.
+5. Jika ingin mengulang, tekan **Putar ulang suara terakhir**.
+
+Browser ponsel dapat memblokir audio otomatis sebelum ada sentuhan pengguna, karena itu tombol tes suara disediakan. Jika halaman menampilkan `401`, muat ulang `/app` agar cookie sesi diperbarui. Untuk kamera, gunakan URL HTTPS Cloudflare, bukan alamat HTTP dari jaringan luar.
 
 URL publik juga disimpan otomatis ke `data/public_url.txt`. Dokumentasi API publik, contoh permintaan, dan kode error tersedia di [`API_CLOUDFLARE.md`](API_CLOUDFLARE.md).
 
 ## Endpoint
 
-| Endpoint | Kegunaan | Kunci API |
+| Endpoint | Kegunaan | Autentikasi |
 |---|---|---|
-| `GET /app` | Halaman kamera, hasil fuzzy, dan suara browser | Tidak |
+| `GET /app` | Halaman kamera, hasil fuzzy, dan suara Ardi | Tidak |
 | `GET /` dan `GET /status` | Informasi dan health check minimal | Tidak |
 | `GET /docs` | Dokumentasi interaktif | Tidak |
-| `POST /deteksi` | Gambar + jarak opsional → JSON deteksi dan urgensi | Wajib |
-| `POST /deteksi/suara` | Deteksi dan opsi pemutaran suara di server | Wajib |
-| `POST /peringatan` | Perhitungan fuzzy tanpa gambar | Wajib |
-| `GET /riwayat` | Riwayat deteksi | Wajib |
+| `POST /deteksi` | Gambar + jarak opsional → JSON deteksi, urgensi, dan rencana suara | Header atau cookie |
+| `POST /deteksi/suara` | Deteksi dan opsi pemutaran suara di server | Header atau cookie |
+| `POST /peringatan` | Perhitungan fuzzy tanpa gambar | Header atau cookie |
+| `GET /riwayat` | Riwayat deteksi | Header atau cookie |
+| `GET /suara/pratinjau` | Rencana suara contoh untuk tes browser | Header atau cookie |
+| `GET /suara/{berkas}` | Berkas MP3 Ardi untuk diputar browser | Header atau cookie |
 
-Operasi API memerlukan header `X-API-Key`. Unggahan gambar dibatasi 10 MB. `/status` hanya memberi status proses dan tidak memuat detail konfigurasi rahasia.
+Klien API memakai header `X-API-Key`. Halaman `/app` memakai cookie sesi `HttpOnly` yang ditandatangani HMAC dan diterbitkan saat halaman dibuka, sehingga pengguna ponsel tidak perlu mengetik kunci. Unggahan gambar dibatasi 10 MB. `/status` hanya memberi status proses dan tidak memuat detail konfigurasi rahasia.
 
 Contoh permintaan:
 
@@ -81,6 +94,7 @@ curl.exe -X POST http://127.0.0.1:8000/deteksi `
 
 - `VEST_API_KEY`: wajib, acak, minimal 32 karakter.
 - `VEST_MODEL_PATH`: bobot YOLO; default `models\best.pt`.
+- `VEST_SUARA_FOLDER`: pustaka klip Ardi; default `suara-natural-ai/cache_ardi`.
 - `VEST_IMGSZ`: ukuran inferensi; default 416.
 - `VEST_CONF`: confidence minimum; default 0.35.
 - `VEST_RIWAYAT_PATH`: lokasi riwayat JSONL.
@@ -90,4 +104,4 @@ curl.exe -X POST http://127.0.0.1:8000/deteksi `
 
 ## Catatan keamanan
 
-Jangan publikasikan server tanpa mengisi kunci kuat. Hindari membagikan URL tunnel dan kunci API; Quick Tunnel memberi URL acak tetapi bukan mekanisme autentikasi. HTTPS tunnel diperlukan untuk akses kamera ponsel dari jaringan publik.
+Jangan publikasikan server tanpa mengisi kunci kuat. Endpoint API memerlukan header `X-API-Key`, sedangkan `/app` menerbitkan cookie sesi tanpa meminta kunci; perlakukan URL `/app` sebagai rahasia dan gunakan Cloudflare Access untuk produksi. Hindari membagikan URL tunnel dan kunci API; Quick Tunnel memberi URL acak tetapi bukan mekanisme autentikasi. HTTPS tunnel diperlukan untuk akses kamera ponsel dari jaringan publik.

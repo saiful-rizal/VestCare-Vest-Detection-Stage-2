@@ -62,7 +62,7 @@ except Exception:  # pragma: no cover
     _TTS_TERSEDIA = False
 
 DEFAULT_MODEL = ROOT / "models" / "best.pt"
-DEFAULT_SUARA_FOLDER = ROOT / "cache_suara"
+DEFAULT_SUARA_FOLDER = ROOT / "suara-natural-ai" / "cache_ardi"
 DEFAULT_CONF = 0.35
 DEFAULT_IMGSZ = 416
 EXPECTED_CLASSES = {
@@ -193,7 +193,7 @@ class InferensiVest:
         if self.suara_aktif:
             self._inisialisasi_suara(paksa_tts_fallback)
         else:
-            print("[SUARA] Playback server nonaktif; keluaran browser dapat memakai Web Speech API.")
+            print("[SUARA] Playback server nonaktif; browser memutar klip Ardi dari suara-natural-ai.")
 
     def _inisialisasi_suara(self, paksa_fallback: bool) -> None:
         # Coba pemutar klip suara-natural-ai dulu.
