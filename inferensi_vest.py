@@ -65,6 +65,13 @@ DEFAULT_MODEL = ROOT / "models" / "best.pt"
 DEFAULT_SUARA_FOLDER = ROOT / "cache_suara"
 DEFAULT_CONF = 0.35
 DEFAULT_IMGSZ = 416
+EXPECTED_CLASSES = {
+    0: "pohon",
+    1: "mobil",
+    2: "motor",
+    3: "orang",
+    4: "lubang",
+}
 
 URUSAN_PRIORITAS = {"AMAN": 0, "INFO": 1, "WASPADA": 2, "BAHAYA": 3}
 
@@ -152,6 +159,7 @@ class InferensiVest:
         imgsz: int = DEFAULT_IMGSZ,
         device: Optional[str] = None,
         paksa_tts_fallback: bool = False,
+        suara_aktif: bool = True,
     ) -> None:
         from datetime import datetime
 
@@ -160,6 +168,7 @@ class InferensiVest:
         self.conf = conf
         self.imgsz = imgsz
         self.device = device
+        self.suara_aktif = suara_aktif
         self.waktu_mulai = datetime.now()
 
         if YOLO is None:
@@ -169,12 +178,22 @@ class InferensiVest:
 
         print(f"[INFERENSI] Memuat model {self.model_path} ...")
         self.model = YOLO(str(self.model_path))
+        model_names = self.model.names
+        model_names = model_names if isinstance(model_names, dict) else dict(enumerate(model_names))
+        model_names = {int(class_id): str(name) for class_id, name in model_names.items()}
+        if model_names != EXPECTED_CLASSES:
+            raise ValueError(
+                f"Model harus memiliki lima kelas {EXPECTED_CLASSES}; ditemukan {model_names}."
+            )
         print(f"[INFERENSI] Model siap. Kelas: {self.model.names}")
 
         # Inisialisasi pemutar suara
         self.pemutar: Optional[PemutarPeringatan] = None
         self.tts_fallback: Optional[TTSFallback] = None
-        self._inisialisasi_suara(paksa_tts_fallback)
+        if self.suara_aktif:
+            self._inisialisasi_suara(paksa_tts_fallback)
+        else:
+            print("[SUARA] Playback server nonaktif; keluaran browser dapat memakai Web Speech API.")
 
     def _inisialisasi_suara(self, paksa_fallback: bool) -> None:
         # Coba pemutar klip suara-natural-ai dulu.
@@ -259,6 +278,8 @@ class InferensiVest:
 
     def putar_suara(self, hasil: HasilInferensi) -> Optional[str]:
         """Putar peringatan suara berdasarkan hasil inferensi. Return teks yang diucapkan."""
+        if not self.suara_aktif:
+            return None
         if hasil.jumlah_objek == 0 or hasil.teratas is None:
             # Tidak ada ancaman -> ucapkan jalur aman (opsional, hanya sekali).
             return None

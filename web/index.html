@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#102a43">
+  <title>VestCare - Deteksi Rintangan</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; background: #f3f6f9; color: #172b4d; }
+    body { max-width: 720px; margin: auto; padding: 18px; }
+    h1 { margin-bottom: 4px; }
+    .card { background: white; border-radius: 14px; padding: 16px; margin: 14px 0; box-shadow: 0 2px 12px #102a4314; }
+    label { display: block; font-weight: 650; margin: 12px 0 6px; }
+    input, button { box-sizing: border-box; width: 100%; padding: 12px; border: 1px solid #bcccdc; border-radius: 10px; font: inherit; }
+    button { border: 0; background: #087e8b; color: white; font-weight: 700; margin-top: 12px; }
+    button:disabled { opacity: .55; }
+    video, img { width: 100%; max-height: 55vh; object-fit: contain; background: #102a43; border-radius: 10px; }
+    .muted { color: #52667a; font-size: .92rem; }
+    .status { padding: 10px; border-radius: 8px; background: #e6f6f7; }
+    .error { background: #fff0ef; color: #9c2c20; }
+    .item { border-top: 1px solid #d9e2ec; padding: 10px 0; }
+    .urgent { font-size: 1.15rem; font-weight: 750; }
+  </style>
+</head>
+<body>
+  <h1>VestCare</h1>
+  <div class="muted">Deteksi kamera → fuzzy urgency → peringatan suara di browser ponsel.</div>
+  <section class="card">
+    <label for="apiKey">Kunci API</label>
+    <input id="apiKey" type="password" autocomplete="off" placeholder="Masukkan VEST_API_KEY">
+    <div class="muted">Kunci hanya disimpan selama tab ini terbuka.</div>
+    <label for="distance">Jarak sensor ultrasonik (meter, opsional)</label>
+    <input id="distance" type="number" min="0.03" max="3" step="0.01" placeholder="Kosongkan jika tanpa sensor">
+    <video id="camera" autoplay playsinline muted></video>
+    <button id="start">Aktifkan kamera belakang</button>
+    <button id="capture" disabled>Deteksi dan bacakan peringatan</button>
+  </section>
+  <section class="card">
+    <div id="status" class="status" role="status">Masukkan kunci API dan aktifkan kamera.</div>
+    <div id="result"></div>
+  </section>
+  <script>
+    const apiKey = document.querySelector("#apiKey");
+    const distance = document.querySelector("#distance");
+    const camera = document.querySelector("#camera");
+    const startButton = document.querySelector("#start");
+    const captureButton = document.querySelector("#capture");
+    const statusBox = document.querySelector("#status");
+    const resultBox = document.querySelector("#result");
+    apiKey.value = sessionStorage.getItem("vestcare-api-key") || "";
+    apiKey.addEventListener("change", () => sessionStorage.setItem("vestcare-api-key", apiKey.value.trim()));
+    let stream;
+
+    function setStatus(message, failed = false) {
+      statusBox.textContent = message;
+      statusBox.classList.toggle("error", failed);
+    }
+
+    startButton.addEventListener("click", async () => {
+      try {
+        if (!navigator.mediaDevices?.getUserMedia) {
+          throw new Error("Browser perlu HTTPS dan izin kamera.");
+        }
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" } }, audio: false
+        });
+        camera.srcObject = stream;
+        captureButton.disabled = false;
+        setStatus("Kamera aktif. Arahkan ke jalur di depan.");
+      } catch (error) {
+        setStatus(`Kamera tidak dapat dibuka: ${error.message}`, true);
+      }
+    });
+
+    function speak(report) {
+      if (!("speechSynthesis" in window)) {
+        setStatus("Browser ini tidak mendukung suara otomatis; hasil deteksi tetap tampil.", true);
+        return;
+      }
+      const detections = report.deteksi || [];
+      let phrase;
+      if (!detections.length) {
+        phrase = "Jalur aman. Tidak ada rintangan terdeteksi.";
+      } else {
+        const top = detections[0];
+        const directions = { kiri: "di sebelah kiri", kanan: "di sebelah kanan", depan: "di depan" };
+        phrase = `${top.level}. ${top.kelas} ${directions[top.arah] || "di depan"}, sekitar ${Number(top.jarak_m).toFixed(1)} meter.`;
+        if (top.level === "BAHAYA") phrase = `Awas. ${phrase} Segera berhenti dan cari jalur aman.`;
+      }
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(phrase);
+      utterance.lang = "id-ID";
+      utterance.rate = 0.95;
+      window.speechSynthesis.speak(utterance);
+    }
+
+    captureButton.addEventListener("click", async () => {
+      const key = apiKey.value.trim();
+      if (!key) {
+        setStatus("Kunci API wajib diisi.", true);
+        apiKey.focus();
+        return;
+      }
+      if (!camera.videoWidth || !camera.videoHeight) {
+        setStatus("Menunggu kamera siap. Coba lagi.", true);
+        return;
+      }
+      captureButton.disabled = true;
+      setStatus("Menganalisis gambar...");
+      try {
+        const maxWidth = 1280;
+        const scale = Math.min(1, maxWidth / camera.videoWidth);
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(camera.videoWidth * scale);
+        canvas.height = Math.round(camera.videoHeight * scale);
+        canvas.getContext("2d").drawImage(camera, 0, 0, canvas.width, canvas.height);
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", 0.86));
+        if (!blob) throw new Error("Gagal mengambil gambar dari kamera.");
+        const form = new FormData();
+        form.append("gambar", blob, "kamera.jpg");
+        if (distance.value !== "") form.append("jarak_m", distance.value);
+        const response = await fetch("/deteksi", {
+          method: "POST",
+          headers: { "X-API-Key": key },
+          body: form
+        });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`);
+        const detections = body.deteksi || [];
+        resultBox.replaceChildren();
+        const heading = document.createElement("div");
+        heading.className = "urgent";
+        heading.textContent = `${body.level_tertinggi} - urgensi ${body.urgensi_tertinggi}/100`;
+        resultBox.append(heading);
+        if (!detections.length) {
+          const item = document.createElement("p");
+          item.textContent = "Tidak ada rintangan yang terdeteksi.";
+          resultBox.append(item);
+        }
+        for (const detection of detections) {
+          const item = document.createElement("div");
+          item.className = "item";
+          item.textContent = `${detection.level} | ${detection.kelas} ${detection.arah} | ${Number(detection.jarak_m).toFixed(1)} m | confidence ${Math.round(detection.conf * 100)}%`;
+          resultBox.append(item);
+        }
+        setStatus("Analisis selesai. Suara peringatan diputar melalui ponsel.");
+        speak(body);
+      } catch (error) {
+        setStatus(`Deteksi gagal: ${error.message}`, true);
+      } finally {
+        captureButton.disabled = false;
+      }
+    });
+
+    window.addEventListener("pagehide", () => stream?.getTracks().forEach(track => track.stop()));
+  </script>
+</body>
+</html>
