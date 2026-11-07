@@ -117,14 +117,14 @@
       }
       stopAudio();
       const token = audioToken;
-      setStatus(`Memutar peringatan ${plan.level} dengan suara Ardi...`);
+      setStatus(`Memutar instruksi ${plan.level} dengan suara Ardi...`);
       try {
         for (const segmen of plan.segmen) {
           if (token !== audioToken) return;
           await playUrl(segmen.url);
         }
         if (token !== audioToken) return;
-        setStatus(`Peringatan ${plan.level} selesai diputar.`);
+        setStatus(`Instruksi ${plan.level} selesai diputar.`);
       } catch (error) {
         if (token !== audioToken) return;
         setStatus(`Suara gagal diputar: ${error.message}. Periksa volume dan izin audio browser.`, true);
@@ -175,7 +175,7 @@
       if (body.suara && body.suara.teks) {
         const sound = document.createElement("div");
         sound.className = "sound";
-        sound.textContent = `Suara Ardi: ${body.suara.teks}`;
+        sound.textContent = `Instruksi dan solusi suara Ardi: ${body.suara.teks}`;
         resultBox.append(sound);
       }
       if (!detections.length) {
@@ -244,6 +244,18 @@
             else setStatus(`Peringatan ${top.level}: ${top.kelas} ${top.arah}.`, true);
           } else if (audio.paused) {
             setStatus(`${alerts.length} rintangan terdeteksi. Peringatan ${top.level}.`);
+          }
+        } else if (detections.length) {
+          lastAlertAt = now;
+          const top = detections[0];
+          const nextKey = `${top.kelas}:${top.arah}`;
+          if ((nextKey !== alertKey || alertLevel > 0) && now - lastSpokenAt >= 1800) {
+            alertKey = nextKey;
+            alertLevel = 0;
+            lastSpokenAt = now;
+            if (body.suara) void playPlan(body.suara);
+          } else if (audio.paused) {
+            setStatus(`${detections.length} objek terdeteksi. ${top.kelas} ${top.arah}; tetap waspada.`);
           }
         } else {
           if (now - lastAlertAt > 3500) {

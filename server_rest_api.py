@@ -63,7 +63,7 @@ DEFAULT_SUARA_FOLDER = ROOT / "suara-natural-ai" / "cache_ardi"
 DEFAULT_CONF = 0.35
 DEFAULT_IMGSZ = 416
 
-from fuzzysugeno import analisis_hasil, validasi_nama_kelas  # noqa: E402
+from fuzzysugeno import KELAS_ID_KE_NAMA, analisis_hasil, validasi_nama_kelas  # noqa: E402
 from ultralytics import YOLO  # noqa: E402
 
 
@@ -142,12 +142,36 @@ class PerencanaSuara:
         for key, entries in manifest.get("pesan", {}).items():
             valid = [
                 entry for entry in entries
-                if entry.get("berkas") and (folder / entry["berkas"]).is_file()
+                if entry.get("berkas")
+                and str(entry.get("teks", "")).strip()
+                and (folder / entry["berkas"]).is_file()
             ]
             if valid:
                 self._pesan_siap[key] = valid
                 self._berkas.update(entry["berkas"] for entry in valid)
         self.tersedia = set(self._pesan_siap)
+        wajib = {"jalur_aman", "awal_waspada", "awal_bahaya"}
+        wajib.update(
+            f"benda_{kelas}_{arah}_netral"
+            for kelas in (*KELAS_ID_KE_NAMA.values(), "umum")
+            for arah in ("kiri", "depan", "kanan")
+        )
+        wajib.update(f"jarak_{jarak:02d}" for jarak in range(5, 51, 5))
+        wajib.update(
+            f"solusi_{aksi}"
+            for aksi in (
+                "lurus",
+                "pelan",
+                "pelan_kiri",
+                "pelan_kanan",
+                "berhenti",
+                "berhenti_kiri",
+                "berhenti_kanan",
+            )
+        )
+        hilang = sorted(wajib - self.tersedia)
+        if hilang:
+            raise ValueError(f"Klip suara atau teks wajib belum tersedia: {', '.join(hilang)}")
 
     def berkas_diizinkan(self, nama_berkas: str) -> bool:
         return nama_berkas in self._berkas
@@ -198,13 +222,15 @@ class PerencanaSuara:
     def susun(self, detections: list[dict]) -> Optional[dict]:
         active = [item for item in detections if str(item.get("level", "")).upper() != "AMAN"]
         if not active:
-            safe = self._segmen("jalur_aman")
-            return {
-                "level": "AMAN",
-                "teks": safe["teks"],
-                "aksi": "lurus",
-                "segmen": [safe],
-            } if safe else None
+            if not detections:
+                safe = self._segmen("jalur_aman")
+                return {
+                    "level": "AMAN",
+                    "teks": safe["teks"],
+                    "aksi": "lurus",
+                    "segmen": [safe],
+                } if safe else None
+            active = detections
         top = max(
             active,
             key=lambda item: (
