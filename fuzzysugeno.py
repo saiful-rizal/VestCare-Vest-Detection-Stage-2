@@ -1,8 +1,17 @@
 import math
+from collections.abc import Mapping, Sequence
 
 import time
 
 import numpy as np
+
+KELAS_ID_KE_NAMA: dict[int, str] = {
+    0: "pohon",
+    1: "mobil",
+    2: "motor",
+    3: "orang",
+    4: "lubang",
+}
 
 BAHAYA_KELAS = {
     "lubang": 10,
@@ -41,6 +50,26 @@ US_MAKS_M = 3.0
 JARAK_TAK_DIKETAHUI_M = 2.0
 
 SETENGAH_KORIDOR_M = 0.45
+CONF_MIN_KELAS = {"lubang": 0.80}
+
+
+def validasi_nama_kelas(
+    nama_kelas: Mapping[object, object] | Sequence[object],
+) -> dict[int, str]:
+    if isinstance(nama_kelas, Mapping):
+        nama_kelas_normal = {
+            int(class_id): str(name) for class_id, name in nama_kelas.items()
+        }
+    elif isinstance(nama_kelas, Sequence) and not isinstance(nama_kelas, (str, bytes)):
+        nama_kelas_normal = dict(enumerate(map(str, nama_kelas)))
+    else:
+        raise ValueError("Daftar kelas model tidak valid.")
+
+    if nama_kelas_normal != KELAS_ID_KE_NAMA:
+        raise ValueError(f"Urutan kelas model tidak cocok: {nama_kelas_normal}")
+
+    return nama_kelas_normal
+
 
 GETAR = {
     "AMAN":    {"pwm": 0,   "interval_ms": 0,    "pola": "mati"},
@@ -50,8 +79,23 @@ GETAR = {
 }
 
 
+def _angka_terbatas(nilai, nama):
+    try:
+        angka = float(nilai)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(f"{nama} harus berupa angka hingga.") from error
+
+    if not math.isfinite(angka):
+        raise ValueError(f"{nama} harus berupa angka hingga.")
+
+    return angka
+
+
 def trap(x, a, b, c, d):
-    x = float(x)
+    x, a, b, c, d = (
+        _angka_terbatas(nilai, nama)
+        for nilai, nama in ((x, "x"), (a, "a"), (b, "b"), (c, "c"), (d, "d"))
+    )
 
     if x < a or x > d:
         return 0.0
@@ -66,6 +110,10 @@ def trap(x, a, b, c, d):
 
 
 def fuzzifikasi(jarak, bahaya, jalur):
+    jarak = _angka_terbatas(jarak, "jarak")
+    bahaya = _angka_terbatas(bahaya, "bahaya")
+    jalur = _angka_terbatas(jalur, "jalur")
+
     return {
         "jarak": {
             "sangat_dekat": trap(jarak, -1, 0, JARAK_KRITIS_M, JARAK_TENGAH_M),
@@ -120,7 +168,7 @@ def sugeno(jarak, bahaya, jalur):
 
 
 def level(u):
-    u = float(u)
+    u = _angka_terbatas(u, "urgensi")
 
     return "BAHAYA" if u >= 75 else "WASPADA" if u >= 50 else "INFO" if u >= 25 else "AMAN"
 
@@ -286,6 +334,7 @@ class IngatanHalangan:
 
 def analisis_hasil(res, jarak_fn=None, conf_min=0.35, jarak_us=None, ingatan=None):
     h, w = res.orig_shape
+    nama_kelas = validasi_nama_kelas(res.names)
 
     us = _us_valid(jarak_us)
 
@@ -300,9 +349,20 @@ def analisis_hasil(res, jarak_fn=None, conf_min=0.35, jarak_us=None, ingatan=Non
             if conf < conf_min:
                 continue
 
-            nama = res.names[int(box.cls)]
+            class_id = int(box.cls)
+            if class_id not in nama_kelas:
+                raise ValueError(f"Class ID model tidak dikenal: {class_id}")
+            nama = nama_kelas[class_id]
+            if conf < CONF_MIN_KELAS.get(nama, conf_min):
+                continue
 
             xyxy = box.xyxy[0].tolist()
+            bbox = [
+                round(max(0.0, min(1.0, float(xyxy[0]) / w)), 4),
+                round(max(0.0, min(1.0, float(xyxy[1]) / h)), 4),
+                round(max(0.0, min(1.0, float(xyxy[2]) / w)), 4),
+                round(max(0.0, min(1.0, float(xyxy[3]) / h)), 4),
+            ]
 
             pos = arah((xyxy[0] + xyxy[2]) / 2 / w)
 
@@ -317,7 +377,9 @@ def analisis_hasil(res, jarak_fn=None, conf_min=0.35, jarak_us=None, ingatan=Non
 
             jalur = keterhalangan(poly, w, h, koridor=koridor_untuk_jarak(jarak))
 
-            out.append(_entri(nama, jarak, bahaya, jalur, conf, pos, sumber))
+            entri = _entri(nama, jarak, bahaya, jalur, conf, pos, sumber)
+            entri["bbox"] = bbox
+            out.append(entri)
 
     if us is not None and not any(d["arah"] == "depan" for d in out):
         e = _entri("umum", us, BAHAYA_DEFAULT, 1.0, 0.0, "depan", "ultrasonik")
@@ -332,7 +394,7 @@ def analisis_hasil(res, jarak_fn=None, conf_min=0.35, jarak_us=None, ingatan=Non
 
 
 def hitung_peringatan(skor_risiko, jarak_m=None):
-    skor_risiko = max(0.0, min(1.0, float(skor_risiko)))
+    skor_risiko = max(0.0, min(1.0, _angka_terbatas(skor_risiko, "skor_risiko")))
 
     if jarak_m is None:
         if skor_risiko >= 0.75:
@@ -349,7 +411,7 @@ def hitung_peringatan(skor_risiko, jarak_m=None):
         ket = "jarak_m=None -> fallback tanpa fuzzy jarak"
 
     else:
-        jarak_m = max(0.0, float(jarak_m))
+        jarak_m = max(0.0, _angka_terbatas(jarak_m, "jarak_m"))
 
         bahaya = skor_risiko * 10.0
 

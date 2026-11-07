@@ -1,9 +1,0 @@
-path: C:/dataset vestcare (rompi-cerdas)
-train: C:/dataset vestcare (rompi-cerdas)/runs/dataset_splits/train.txt
-val: C:/dataset vestcare (rompi-cerdas)/runs/dataset_splits/val.txt
-names:
-  0: pohon
-  1: mobil
-  2: motor
-  3: orang
-  4: lubang
