@@ -1,0 +1,15 @@
+# Konfigurasi Cloudflare Tunnel untuk VestCare API
+# Salin ke ~/.cloudflared/config.yml (Linux/Mac) atau %USERPROFILE%\.cloudflared\config.yml (Windows)
+# lalu jalankan:  cloudflared service install   (atau: cloudflared tunnel --config cloudflared.yml --token <TOKEN>)
+
+tunnel: vestcare-tunnel
+credentials-file: ~/.cloudflared/vestcare-tunnel.json
+
+ingress:
+  # Publikasikan FastAPI server (port 8000) ke domain Anda
+  - hostname: api.vestcare-contoh.com        # <- ganti dengan domain Anda di Cloudflare Zero Trust
+    service: http://localhost:8000
+  - service: http_status:404
+
+# Contoh untuk quick tunnel tanpa domain:
+#   cloudflared tunnel --url http://localhost:8000

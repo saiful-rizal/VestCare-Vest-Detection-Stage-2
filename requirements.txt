@@ -1,0 +1,25 @@
+# Dependensi untuk training & evaluasi vestcare (rompi-cerdas) tahap 07-08
+ultralytics==8.4.195
+torch==2.14.1
+torchvision==0.29.1
+PyYAML==6.0.3
+matplotlib==3.11.2
+opencv-python==5.0.0.93
+numpy==2.5.4
+pillow==13.0.0
+
+# Dependensi API server (FastAPI)
+fastapi==0.115.0
+uvicorn==0.32.1
+python-multipart==0.0.9
+
+# Dependensi output suara (edge-tts TTS + pydub + pygame)
+# Butuh FFmpeg terpasang di sistem (bukan paket pip): https://ffmpeg.org/download.html
+edge-tts>=6.1.0
+pydub>=0.25.1
+pygame-ce>=2.5.0
+audioop-lts>=0.2.1; python_version >= '3.13'
+
+# LLM gratis untuk pembuat pustaka suara (suara-natural-ai/siapkan_pustaka.py)
+# --llm gemini: butuh GEMINI_API_KEY (gratis, aistudio.google.com)
+# --llm ollama: butuh Ollama berjalan di lokal

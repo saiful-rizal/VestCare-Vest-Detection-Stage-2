@@ -1,0 +1,68 @@
+# ============================================================================
+# .gitignore — VestCare Rompi Cerdas (Stage 2)
+# ============================================================================
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Virtual environment (terlalu besar untuk GitHub)
+.venv/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs (kecuali yang ingin di-archive, simpan di folder runs/ dan root *.log jika diperlukan)
+*.log
+
+# OS
+desktop.ini
+
+# Dataset (terlalu besar, di-manual atau melalui Git LFS)
+dataset_lubang/
+dataset_mobil/
+dataset_motor/
+dataset_orang/
+dataset_pohon/
+
+# Model bobot besar (opsional: simpan dengan Git LFS atau uncomment jika ingin push)
+# models/*.pt
+
+# Cache suara (dihasilkan oleh siapkan_pustaka.py)
+suara-natural-ai/cache_ardi/
+suara-natural-ai/cache_suara/
+suara-natural-ai/cache_gadis/
+suara-natural-ai/*.wav
+suara-natural-ai/*.mp3
+
+# Hasil evaluasi runtime (dihasilkan, bisa di-reproduksi)
+hasil_06/
+hasil_07/
+hasil_08/
+
+# Riwayat deteksi server
+data/
+
+# Environment
+.env
+.env.local
+.env.*.local
