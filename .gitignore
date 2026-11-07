@@ -66,3 +66,9 @@ data/
 .env
 .env.local
 .env.*.local
+
+# Log mentah training dan evaluasi yang disertakan sebagai bukti hasil
+!training_semua_*.log
+!runs/segment/runs/semua_kelas_yolo26n/training.log
+!runs/segment/runs/semua_kelas_yolo26n/raw/training.log
+!runs/segment/runs/semua_kelas_yolo26n/evaluation/evaluation_*.log
