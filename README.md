@@ -336,6 +336,9 @@ Endpoint operasi memerlukan header `X-API-Key` yang nilainya sama dengan
 Unggahan gambar dibatasi 10 MB. Server secara default hanya mendengarkan di
 `127.0.0.1:8000`.
 
+Dokumentasi API publik, contoh permintaan, kode error, dan panduan Cloudflare
+Tunnel tersedia di [`API_CLOUDFLARE.md`](API_CLOUDFLARE.md).
+
 ### 7.4 Contoh permintaan
 
 Deteksi objek dan fuzzy:
@@ -443,6 +446,7 @@ gambar, termasuk praproses dan pascaproses.
 VestCare-Vest-Detection-Stage-2/
 ├── README.md                         halaman utama dokumentasi
 ├── README_INTEGRASI.md               panduan integrasi API, suara, dan tunnel
+├── API_CLOUDFLARE.md                 dokumentasi API publik Cloudflare
 ├── HASIL_TRAINING.md                 laporan training versi lengkap
 ├── .env.example                      template variabel lingkungan
 ├── .gitignore                        aturan ignore Git
@@ -454,6 +458,7 @@ VestCare-Vest-Detection-Stage-2/
 ├── inferensi_vest.py                 pipeline YOLO, fuzzy, dan suara
 ├── fuzzysugeno.py                    fuzzy Sugeno dan aturan urgensi
 ├── server_rest_api.py                server FastAPI
+├── app.py                            entry point ASGI untuk `uvicorn app:app`
 ├── config_env.py                     pembaca file .env
 ├── start_server.py                   starter server dengan validasi kunci
 ├── start_tunnel.py                   starter Cloudflare Tunnel

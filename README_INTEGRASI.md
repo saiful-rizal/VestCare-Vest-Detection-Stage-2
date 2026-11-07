@@ -36,6 +36,12 @@ Untuk lokal:
 .\run_server.bat
 ```
 
+Alternatif menjalankan langsung dengan Uvicorn:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn app:app --host 127.0.0.1 --port 8000
+```
+
 Buka `http://127.0.0.1:8000/app` di ponsel pada jaringan yang sama, atau di komputer yang menjalankan server. Dokumentasi API ada di `http://127.0.0.1:8000/docs`. Browser memerlukan HTTPS untuk kamera jarak jauh; `localhost` dapat dipakai untuk pengujian lokal.
 
 Untuk Cloudflare Tunnel, pasang `cloudflared` dan opsional atur `CLOUDFLARED_TOKEN` di `.env`. Tanpa token, runner menggunakan Quick Tunnel dengan URL sementara. Jalankan:
@@ -45,6 +51,8 @@ Untuk Cloudflare Tunnel, pasang `cloudflared` dan opsional atur `CLOUDFLARED_TOK
 ```
 
 Launcher memulai API hanya pada `127.0.0.1`, menunggu pemeriksaan status berhasil, kemudian menjalankan tunnel. Buka URL HTTPS yang dicetak Cloudflare dengan akhiran `/app`, masukkan `VEST_API_KEY`, lalu izinkan akses kamera dan suara.
+
+URL publik juga disimpan otomatis ke `data/public_url.txt`. Dokumentasi API publik, contoh permintaan, dan kode error tersedia di [`API_CLOUDFLARE.md`](API_CLOUDFLARE.md).
 
 ## Endpoint
 
