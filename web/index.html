@@ -60,6 +60,7 @@
     let alertLevel = 0;
     let lastAlertAt = 0;
     let lastSpokenAt = 0;
+    const detectionIntervalMs = 100;
 
     function setStatus(message, failed = false) {
       statusBox.textContent = message;
@@ -192,10 +193,14 @@
     }
 
     async function detectFrame() {
-      if (!detecting || !camera.videoWidth || !camera.videoHeight) return;
+      if (!detecting) return;
+      if (!camera.videoWidth || !camera.videoHeight) {
+        window.setTimeout(detectFrame, detectionIntervalMs);
+        return;
+      }
       const session = cameraSession;
       try {
-        const scale = Math.min(1, 960 / camera.videoWidth);
+        const scale = Math.min(1, 640 / camera.videoWidth);
         const snapshot = document.createElement("canvas");
         snapshot.width = Math.round(camera.videoWidth * scale);
         snapshot.height = Math.round(camera.videoHeight * scale);
@@ -214,6 +219,10 @@
         if (!detecting || session !== cameraSession) return;
         if (response.status === 401) {
           detecting = false;
+          stream?.getTracks().forEach(track => track.stop());
+          stream = null;
+          camera.srcObject = null;
+          stopAudio();
           setStatus("Sesi berakhir. Muat ulang halaman untuk melanjutkan.", true);
           return;
         }
@@ -231,7 +240,7 @@
             alertKey = nextKey;
             alertLevel = nextLevel;
             lastSpokenAt = now;
-            if (body.suara) await playPlan(body.suara);
+            if (body.suara) void playPlan(body.suara);
             else setStatus(`Peringatan ${top.level}: ${top.kelas} ${top.arah}.`, true);
           } else if (audio.paused) {
             setStatus(`${alerts.length} rintangan terdeteksi. Peringatan ${top.level}.`);
@@ -250,7 +259,7 @@
       } catch (error) {
         if (detecting && session === cameraSession) setStatus(`Deteksi gagal: ${error.message}`, true);
       } finally {
-        if (detecting && session === cameraSession) window.setTimeout(detectFrame, 250);
+        if (detecting && session === cameraSession) window.setTimeout(detectFrame, detectionIntervalMs);
       }
     }
 

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import sys
-from typing import Optional
+from typing import Any, Optional
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -25,6 +25,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from PIL import Image
+from starlette.concurrency import run_in_threadpool
 import io
 
 ROOT = Path(__file__).resolve().parent
@@ -69,7 +70,7 @@ from ultralytics import YOLO  # noqa: E402
 @dataclass
 class HasilInferensi:
     waktu: str
-    deteksi: list[dict]
+    deteksi: list[dict[str, Any]]
     aksi_suara: Optional[str] = None
     suara_diputar: bool = False
 
@@ -112,7 +113,7 @@ class InferensiVest:
         )
 
     @staticmethod
-    def ke_dict(hasil: HasilInferensi) -> dict:
+    def ke_dict(hasil: HasilInferensi) -> dict[str, Any]:
         return {
             "waktu": hasil.waktu,
             "jumlah_objek": hasil.jumlah_objek,
@@ -294,6 +295,7 @@ except Exception as e:
 
 ENGINE: Optional[InferensiVest] = None
 ENGINE_ERROR: Optional[str] = None
+INFERENSI_LOCK = threading.Lock()
 try:
     ENGINE = InferensiVest(
         model_path=MODEL_PATH,
@@ -390,9 +392,10 @@ def _rencana_suara(data: dict) -> Optional[dict]:
     return PERENCANA_SUARA.susun(data.get("deteksi", []))
 
 
-def _pastikan_engine_siap():
+def _pastikan_engine_siap() -> InferensiVest:
     if ENGINE is None:
         raise HTTPException(status_code=503, detail=f"Engine belum siap: {ENGINE_ERROR}")
+    return ENGINE
 
 
 def _simpan_riwayat(hasil_dict: dict, sumber: str):
@@ -433,14 +436,14 @@ def _alamat_ngrok_aktif(port: int) -> Optional[str]:
     )
 
 
-def _jalankan_deteksi(gambar_pil: Image.Image, jarak_m: Optional[float]):
-    _pastikan_engine_siap()
-    assert ENGINE is not None
-    hasil = ENGINE.deteksi_gambar(
-        np.array(gambar_pil.convert("RGB")),
-        jarak_us=jarak_m,
-        conf_min=CONF,
-    )
+def _jalankan_deteksi(gambar_pil: Image.Image, jarak_m: Optional[float]) -> HasilInferensi:
+    engine = _pastikan_engine_siap()
+    with INFERENSI_LOCK:
+        hasil = engine.deteksi_gambar(
+            np.array(gambar_pil.convert("RGB")),
+            jarak_us=jarak_m,
+            conf_min=CONF,
+        )
     return hasil
 
 
@@ -545,8 +548,8 @@ async def deteksi(
     _cek_api_key(request, x_api_key)
     img = await _baca_gambar(gambar)
 
-    hasil = _jalankan_deteksi(img, jarak_m)
-    data = ENGINE.ke_dict(hasil)
+    hasil = await run_in_threadpool(_jalankan_deteksi, img, jarak_m)
+    data = InferensiVest.ke_dict(hasil)
     data["suara"] = _rencana_suara(data)
     entri = _simpan_riwayat(data, sumber="deteksi")
     return JSONResponse(entri)
@@ -562,8 +565,8 @@ async def deteksi_suara(
     _cek_api_key(request, x_api_key)
     img = await _baca_gambar(gambar)
 
-    hasil = _jalankan_deteksi(img, jarak_m)
-    data = ENGINE.ke_dict(hasil)
+    hasil = await run_in_threadpool(_jalankan_deteksi, img, jarak_m)
+    data = InferensiVest.ke_dict(hasil)
     data["suara"] = _rencana_suara(data)
     entri = _simpan_riwayat(data, sumber="deteksi_suara")
     return JSONResponse(entri)

@@ -1,5 +1,6 @@
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
+from typing import Any, Callable, Optional, Sequence
 
 import time
 
@@ -54,16 +55,14 @@ CONF_MIN_KELAS = {"lubang": 0.80}
 
 
 def validasi_nama_kelas(
-    nama_kelas: Mapping[object, object] | Sequence[object],
+    nama_kelas: Mapping[int, str] | list[str] | tuple[str, ...],
 ) -> dict[int, str]:
     if isinstance(nama_kelas, Mapping):
         nama_kelas_normal = {
             int(class_id): str(name) for class_id, name in nama_kelas.items()
         }
-    elif isinstance(nama_kelas, Sequence) and not isinstance(nama_kelas, (str, bytes)):
-        nama_kelas_normal = dict(enumerate(map(str, nama_kelas)))
     else:
-        raise ValueError("Daftar kelas model tidak valid.")
+        nama_kelas_normal = dict(enumerate(map(str, nama_kelas)))
 
     if nama_kelas_normal != KELAS_ID_KE_NAMA:
         raise ValueError(f"Urutan kelas model tidak cocok: {nama_kelas_normal}")
@@ -71,7 +70,7 @@ def validasi_nama_kelas(
     return nama_kelas_normal
 
 
-GETAR = {
+GETAR: dict[str, dict[str, int | str]] = {
     "AMAN":    {"pwm": 0,   "interval_ms": 0,    "pola": "mati"},
     "INFO":    {"pwm": 80,  "interval_ms": 1000, "pola": "denyut tunggal lemah"},
     "WASPADA": {"pwm": 120, "interval_ms": 600,  "pola": "berdenyut pelan"},
@@ -79,7 +78,7 @@ GETAR = {
 }
 
 
-def _angka_terbatas(nilai, nama):
+def _angka_terbatas(nilai: Any, nama: str) -> float:
     try:
         angka = float(nilai)
     except (TypeError, ValueError, OverflowError) as error:
@@ -91,7 +90,7 @@ def _angka_terbatas(nilai, nama):
     return angka
 
 
-def trap(x, a, b, c, d):
+def trap(x: float, a: float, b: float, c: float, d: float) -> float:
     x, a, b, c, d = (
         _angka_terbatas(nilai, nama)
         for nilai, nama in ((x, "x"), (a, "a"), (b, "b"), (c, "c"), (d, "d"))
@@ -109,7 +108,7 @@ def trap(x, a, b, c, d):
     return (d - x) / (d - c) if d > c else 1.0
 
 
-def fuzzifikasi(jarak, bahaya, jalur):
+def fuzzifikasi(jarak: float, bahaya: float, jalur: float) -> dict[str, dict[str, float]]:
     jarak = _angka_terbatas(jarak, "jarak")
     bahaya = _angka_terbatas(bahaya, "bahaya")
     jalur = _angka_terbatas(jalur, "jalur")
@@ -134,7 +133,7 @@ def fuzzifikasi(jarak, bahaya, jalur):
     }
 
 
-ATURAN = [
+ATURAN: list[tuple[str | None, str | None, str | None, int]] = [
     ("sangat_dekat", "tinggi", "penuh", 100), ("sangat_dekat", "tinggi", "sebagian", 100),
     ("dekat", "tinggi", "penuh", 90), ("dekat", "tinggi", "sebagian", 75),
     ("sedang", "tinggi", "penuh", 60), ("sedang", "tinggi", "sebagian", 45),
@@ -152,7 +151,7 @@ ATURAN = [
 ]
 
 
-def sugeno(jarak, bahaya, jalur):
+def sugeno(jarak: float, bahaya: float, jalur: float) -> float:
     mu = fuzzifikasi(jarak, bahaya, jalur)
 
     num = den = 0.0
@@ -167,13 +166,13 @@ def sugeno(jarak, bahaya, jalur):
     return num / den if den > 1e-9 else 0.0
 
 
-def level(u):
+def level(u: float) -> str:
     u = _angka_terbatas(u, "urgensi")
 
     return "BAHAYA" if u >= 75 else "WASPADA" if u >= 50 else "INFO" if u >= 25 else "AMAN"
 
 
-def estimasi_jarak_kamera(xyxy, tinggi_gambar):
+def estimasi_jarak_kamera(xyxy: Sequence[float], tinggi_gambar: int) -> Optional[float]:
     f_y = (tinggi_gambar / 2) / math.tan(math.radians(VFOV_DEG / 2))
 
     sudut = TILT_BAWAH_DEG + math.degrees(math.atan((xyxy[3] - tinggi_gambar / 2) / f_y))
@@ -187,7 +186,7 @@ def estimasi_jarak_kamera(xyxy, tinggi_gambar):
 UKURAN_KELAS_M = {"orang": 0.5, "pohon": 0.3, "motor": 0.7, "mobil": 1.5}
 
 
-def rentang_kamera(lebar_px=640, px_min=24):
+def rentang_kamera(lebar_px: int = 640, px_min: int = 24) -> dict[str, dict[str, float]]:
     f = (lebar_px / 2) / math.tan(math.radians(HFOV_DEG / 2))
 
     hasil = {k: {"dekat": KAMERA_MIN_M, "jauh": f * dim / px_min} for k, dim in UKURAN_KELAS_M.items()}
@@ -197,7 +196,7 @@ def rentang_kamera(lebar_px=640, px_min=24):
     return hasil
 
 
-def koridor_untuk_jarak(jarak):
+def koridor_untuk_jarak(jarak: float) -> tuple[float, float]:
     d = max(float(jarak), 0.4)
 
     frac = (SETENGAH_KORIDOR_M / d) / (2 * math.tan(math.radians(HFOV_DEG / 2)))
@@ -207,7 +206,13 @@ def koridor_untuk_jarak(jarak):
     return (0.5 - frac, 0.5 + frac)
 
 
-def keterhalangan(mask_poly, w, h, koridor=(0.30, 0.70), y_atas=0.45):
+def keterhalangan(
+    mask_poly: Optional[np.ndarray | Sequence[Sequence[float]]],
+    w: int,
+    h: int,
+    koridor: tuple[float, float] = (0.30, 0.70),
+    y_atas: float = 0.45,
+) -> float:
     if mask_poly is None or len(mask_poly) < 3:
         return 0.0
 
@@ -218,7 +223,7 @@ def keterhalangan(mask_poly, w, h, koridor=(0.30, 0.70), y_atas=0.45):
     except ImportError:
         x1, x2 = poly[:, 0].min(), poly[:, 0].max()
 
-        y1, y2 = poly[:, 1].min(), poly[:, 1].max()
+        y2 = poly[:, 1].max()
 
         lebar_obj = x2 - x1
 
@@ -244,11 +249,16 @@ def keterhalangan(mask_poly, w, h, koridor=(0.30, 0.70), y_atas=0.45):
     return float((m & kor).sum() / luas) if luas else 0.0
 
 
-def arah(cx_norm):
+def arah(cx_norm: float) -> str:
     return "kiri" if cx_norm < 0.4 else "kanan" if cx_norm > 0.6 else "depan"
 
 
-def fusi_jarak(jarak_kam, jarak_us, pos, terpotong=False):
+def fusi_jarak(
+    jarak_kam: Optional[float],
+    jarak_us: Optional[float],
+    pos: str,
+    terpotong: bool = False,
+) -> tuple[float, str]:
     kam = None if jarak_kam is None else max(0.0, float(jarak_kam))
 
     if terpotong:
@@ -269,19 +279,27 @@ def fusi_jarak(jarak_kam, jarak_us, pos, terpotong=False):
     return kam, "kamera"
 
 
-def _us_valid(jarak_us):
+def _us_valid(jarak_us: Any) -> Optional[float]:
     if jarak_us is None:
         return None
 
     try:
         j = float(jarak_us)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
     return j if US_MIN_M <= j <= US_MAKS_M else None
 
 
-def _entri(kelas, jarak, bahaya, jalur, conf, pos, sumber):
+def _entri(
+    kelas: str,
+    jarak: float,
+    bahaya: float,
+    jalur: float,
+    conf: float,
+    pos: str,
+    sumber: str,
+) -> dict[str, Any]:
     u = sugeno(jarak, bahaya, jalur)
 
     lv = level(u)
@@ -296,13 +314,18 @@ KELAS_TAHAN = ("lubang",)
 
 
 class IngatanHalangan:
-    def __init__(self, kecepatan=KECEPATAN_JALAN_MS, umur_maks=2.5,
-                 jarak_picu=KAMERA_MIN_M + 1.0, waktu_fn=time.monotonic):
+    def __init__(
+        self,
+        kecepatan: float = KECEPATAN_JALAN_MS,
+        umur_maks: float = 2.5,
+        jarak_picu: float = KAMERA_MIN_M + 1.0,
+        waktu_fn: Callable[[], float] = time.monotonic,
+    ) -> None:
         self.kecepatan, self.umur_maks, self.jarak_picu, self._waktu = kecepatan, umur_maks, jarak_picu, waktu_fn
 
-        self._simpan = {}
+        self._simpan: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 
-    def perbarui(self, daftar):
+    def perbarui(self, daftar: list[dict[str, Any]]) -> list[dict[str, Any]]:
         kini = self._waktu()
 
         terlihat = {(d["kelas"], d["arah"]) for d in daftar}
@@ -312,7 +335,7 @@ class IngatanHalangan:
                     and d["jarak_m"] <= self.jarak_picu):
                 self._simpan[(d["kelas"], d["arah"])] = (kini, d)
 
-        tambahan = []
+        tambahan: list[dict[str, Any]] = []
 
         for kunci, (t, d) in list(self._simpan.items()):
             if kunci in terlihat:
@@ -332,13 +355,19 @@ class IngatanHalangan:
         return daftar + tambahan
 
 
-def analisis_hasil(res, jarak_fn=None, conf_min=0.35, jarak_us=None, ingatan=None):
+def analisis_hasil(
+    res: Any,
+    jarak_fn: Optional[Callable[[Sequence[float], str], Optional[float]]] = None,
+    conf_min: float = 0.35,
+    jarak_us: Optional[float] = None,
+    ingatan: Optional[IngatanHalangan] = None,
+) -> list[dict[str, Any]]:
     h, w = res.orig_shape
     nama_kelas = validasi_nama_kelas(res.names)
 
     us = _us_valid(jarak_us)
 
-    out = []
+    out: list[dict[str, Any]] = []
 
     if res.boxes is not None and len(res.boxes) > 0:
         polys = res.masks.xy if res.masks is not None else [None] * len(res.boxes)
@@ -393,7 +422,10 @@ def analisis_hasil(res, jarak_fn=None, conf_min=0.35, jarak_us=None, ingatan=Non
     return sorted(out, key=lambda d: -d["urgensi"])
 
 
-def hitung_peringatan(skor_risiko, jarak_m=None):
+def hitung_peringatan(
+    skor_risiko: float,
+    jarak_m: Optional[float] = None,
+) -> dict[str, Any]:
     skor_risiko = max(0.0, min(1.0, _angka_terbatas(skor_risiko, "skor_risiko")))
 
     if jarak_m is None:
