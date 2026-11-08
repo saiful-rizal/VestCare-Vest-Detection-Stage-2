@@ -9,7 +9,7 @@ Sistem peringatan rintangan untuk rompi cerdas berbasis **segmentasi YOLO26n**, 
 - **Suara natural** yang dirakit dari klip Bahasa Indonesia (`suara-natural-ai/`), dengan fallback ke kalimat netral bila klip gerak belum tersedia.
 - **Deteksi gerak objek** (`PelacakGerak`) untuk `mobil`, `motor`, dan `orang`: status `netral`, `bergerak`, atau `diam`.
 - **Penanda `ragu`**: deteksi dengan confidence di bawah `0.50` tetap dikirim di JSON, tetapi tidak dipakai untuk ringkasan, memori, suara, maupun UI.
-- **REST API FastAPI** + halaman web kamera, riwayat deteksi, dan pratinjau suara.
+- **REST API FastAPI** + dashboard React dengan deteksi kamera otomatis multi-objek, kotak setiap objek, hasil deteksi langsung, dan instruksi suara.
 - **Quality gate training** per kelas dengan ambang 98% (box P, box mAP50, mask P, mask mAP50).
 
 ## Struktur proyek
@@ -22,7 +22,8 @@ Sistem peringatan rintangan untuk rompi cerdas berbasis **segmentasi YOLO26n**, 
 | `start_eval.py` | Evaluasi model per kelas dan per varian dataset |
 | `dataset_gabungan.yaml` | Konfigurasi dataset gabungan 5 kelas (path absolut Windows) |
 | `models/best.pt` | Bobot aktif yang dipakai server |
-| `web/index.html` | Antarmuka kamera dan riwayat deteksi |
+| `vest-care-react/` | Dashboard React; hasil build disajikan server dari `vest-care-react/dist/` |
+| `web/index.html` | Halaman web lama (tidak disajikan sebagai halaman utama) |
 | `suara-natural-ai/` | Pustaka klip suara, perakit kalimat, dan contoh integrasi |
 | `runs/segment/runs/` | Artefak training, grafik, laporan, dan evaluasi |
 
@@ -132,10 +133,14 @@ VEST_PORT=8080
 Jalankan:
 
 ```powershell
+cd vest-care-react
+npm install
+npm run build
+cd ..
 python server_rest_api.py
 ```
 
-Server akan membuka API lokal dan tunnel ngrok. Halaman web tersedia di `/app`, dokumentasi interaktif di `/docs`.
+Server akan membuka API lokal dan tunnel ngrok. URL utama ngrok (`/`) langsung menampilkan dashboard React; `/app` tetap menjadi alias. Dokumentasi interaktif tersedia di `/docs`. Build dashboard perlu diperbarui dengan `npm run build` setiap kali source React berubah.
 
 ### Deteksi dari kamera (modul suara)
 
@@ -151,7 +156,8 @@ Gunakan `--sumber` untuk indeks kamera atau path video. Contoh integrasi tanpa k
 |---|---|---|
 | `GET` | `/info` | Info versi, model, `imgsz`, `conf`, `conf_ragu`, status engine |
 | `GET` | `/status` | Status server dan pustaka suara |
-| `GET` | `/app` | Antarmuka web kamera |
+| `GET` | `/` | Dashboard React VestCare |
+| `GET` | `/app` | Alias dashboard React VestCare |
 | `GET` | `/docs` | Dokumentasi OpenAPI |
 | `POST` | `/deteksi` | Upload gambar (`multipart/form-data`) + `jarak_m` opsional |
 | `POST` | `/deteksi/suara` | Sama seperti `/deteksi`, dengan rencana suara |

@@ -23,12 +23,15 @@ import numpy as np
 from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from PIL import Image
 from starlette.concurrency import run_in_threadpool
 import io
 
 ROOT = Path(__file__).resolve().parent
+DASHBOARD_DIR = ROOT / "vest-care-react" / "dist"
+DASHBOARD_INDEX = DASHBOARD_DIR / "index.html"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -498,6 +501,22 @@ def _alamat_ngrok_aktif(port: int) -> Optional[str]:
     )
 
 
+def _server_lokal_aktif(port: int) -> bool:
+    """True bila sudah ada server VestCare yang melayani port tersebut."""
+    try:
+        with urlopen(f"http://127.0.0.1:{port}/status", timeout=1) as response:
+            return response.status == 200
+    except (OSError, URLError):
+        return False
+
+
+def _simpan_url_publik(url: str) -> Path:
+    path = ROOT / "data" / "public_url.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(url + "\n", encoding="utf-8")
+    return path
+
+
 def _jalankan_deteksi(gambar_pil: Image.Image, jarak_m: Optional[float]) -> HasilInferensi:
     engine = _pastikan_engine_siap()
     with INFERENSI_LOCK:
@@ -550,8 +569,13 @@ def info():
 @app.get("/", include_in_schema=False)
 @app.get("/app", include_in_schema=False)
 def aplikasi_browser(request: Request):
+    if not DASHBOARD_INDEX.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail="Dashboard React belum dibangun. Jalankan `npm run build` di folder vest-care-react.",
+        )
     response = FileResponse(
-        ROOT / "web" / "index.html",
+        DASHBOARD_INDEX,
         headers={"Cache-Control": "no-store"},
     )
     if API_KEY_CONFIGURED:
@@ -658,6 +682,10 @@ def riwayat(
     return _baca_riwayat(limit)
 
 
+if DASHBOARD_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=DASHBOARD_DIR, html=True), name="dashboard")
+
+
 if __name__ == "__main__":
     import uvicorn
 
@@ -667,46 +695,64 @@ if __name__ == "__main__":
         )
     if ENGINE is None:
         raise SystemExit(f"Engine deteksi gagal dimuat: {ENGINE_ERROR}")
+
     executable = shutil.which(os.environ.get("NGROK_EXECUTABLE", "ngrok"))
     if executable is None:
         raise SystemExit("ngrok tidak ditemukan. Install ngrok dan pastikan tersedia di PATH.")
 
-    server = uvicorn.Server(uvicorn.Config(app, host=HOST, port=PORT, reload=False))
-    server_thread = threading.Thread(target=server.run, daemon=True)
-    tunnel = None
-    server_thread.start()
-    try:
+    server = None
+    server_thread = None
+    if _server_lokal_aktif(PORT):
+        print(f"[INFO] Server VestCare sudah aktif di http://127.0.0.1:{PORT}; memakai proses yang ada.")
+    else:
+        server = uvicorn.Server(uvicorn.Config(app, host=HOST, port=PORT, reload=False))
+        server_thread = threading.Thread(target=server.run, daemon=True)
+        server_thread.start()
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             if not server_thread.is_alive():
-                raise RuntimeError("Server API berhenti sebelum siap.")
-            try:
-                with urlopen(f"http://127.0.0.1:{PORT}/status", timeout=1) as response:
-                    if response.status == 200:
-                        break
-            except (OSError, URLError):
-                time.sleep(0.25)
+                raise SystemExit(f"Server API berhenti sebelum siap (port {PORT} mungkin dipakai proses lain).")
+            if _server_lokal_aktif(PORT):
+                break
+            time.sleep(0.25)
         else:
-            raise TimeoutError("Server API tidak siap dalam 30 detik.")
+            raise SystemExit(f"Server API tidak siap dalam 30 detik pada port {PORT}.")
 
+    tunnel = None
+    try:
         public_url = _alamat_ngrok_aktif(PORT)
         if public_url is None:
-            tunnel = subprocess.Popen([executable, "http", f"http://127.0.0.1:{PORT}"])
+            tunnel = subprocess.Popen(
+                [executable, "http", f"http://127.0.0.1:{PORT}"],
+                cwd=ROOT,
+            )
             print("[INFO] Menunggu alamat HTTPS ngrok...")
             url_deadline = time.monotonic() + 60
             while time.monotonic() < url_deadline:
                 if tunnel.poll() is not None:
-                    raise RuntimeError(f"ngrok berhenti dengan kode {tunnel.returncode}.")
+                    raise SystemExit(f"ngrok berhenti dengan kode {tunnel.returncode}.")
                 public_url = _alamat_ngrok_aktif(PORT)
                 if public_url:
                     break
                 time.sleep(0.5)
             if public_url is None:
-                raise TimeoutError("Alamat HTTPS ngrok tidak tersedia. Periksa authtoken dan koneksi ngrok.")
+                raise SystemExit(
+                    "Alamat HTTPS ngrok tidak tersedia. Periksa authtoken ngrok dan koneksi internet."
+                )
 
-        print(f"[INFO] Buka halaman kamera: {public_url}")
-        while server_thread.is_alive() and (tunnel is None or tunnel.poll() is None):
-            time.sleep(0.5)
+        path_url = _simpan_url_publik(public_url)
+        print(f"[INFO] Dashboard publik : {public_url}")
+        print(f"[INFO] Dashboard lokal  : http://127.0.0.1:{PORT}")
+        print(f"[INFO] Dokumentasi API  : {public_url}/docs")
+        print(f"[INFO] URL disimpan di  : {path_url}")
+
+        if server_thread is None and tunnel is None:
+            print("[INFO] Server dan tunnel sudah berjalan di proses lain; tidak ada yang perlu dijaga.")
+        else:
+            while (server_thread is None or server_thread.is_alive()) and (
+                tunnel is None or tunnel.poll() is None
+            ):
+                time.sleep(0.5)
     except KeyboardInterrupt:
         pass
     finally:
@@ -717,5 +763,7 @@ if __name__ == "__main__":
             except subprocess.TimeoutExpired:
                 tunnel.kill()
                 tunnel.wait()
-        server.should_exit = True
-        server_thread.join(timeout=10)
+        if server is not None:
+            server.should_exit = True
+        if server_thread is not None:
+            server_thread.join(timeout=10)

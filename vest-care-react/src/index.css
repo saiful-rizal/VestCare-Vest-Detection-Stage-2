@@ -1,0 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---- style khusus Vest-Care (dipindah dari <style> di index.html) ---- */
+.vc-profile-btn{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.35);color:#fff;border-radius:999px;padding:4px 12px 4px 4px;cursor:pointer;font:600 14px 'Open Sans',sans-serif}
+.vc-profile-btn:hover{background:rgba(255,255,255,.26)}
+.vc-avatar{width:34px;height:34px;border-radius:50%;object-fit:cover;background:#f3e3e1}
+.vc-caret{width:0;height:0;border:4px solid transparent;border-top-color:#fff;margin-top:4px}
+.vc-menu{position:absolute;right:0;top:calc(100% + 12px);width:min(300px,88vw);background:#fff;color:#2a1412;border-radius:16px;box-shadow:0 18px 45px rgba(42,20,18,.28);padding:18px;z-index:1000;font-family:'Open Sans',sans-serif}
+.vc-menu-head{display:flex;gap:12px;align-items:center;padding-bottom:14px;border-bottom:1px solid #e9e2e0;margin-bottom:8px}
+.vc-menu-head img{width:56px;height:56px;border-radius:50%;object-fit:cover;background:#f3e3e1}
+.vc-menu-head b{display:block;font-size:16px}
+.vc-menu-head span{font-size:12px;color:#7a6460}
+.vc-row{display:flex;justify-content:space-between;gap:12px;padding:7px 0;font-size:13px}
+.vc-row span:first-child{color:#7a6460}
+.vc-row span:last-child{font-weight:600;text-align:right}
+.vc-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
+.vc-student{position:relative;height:100%;min-height:440px;border-radius:16px;overflow:hidden;display:flex;align-items:flex-end;justify-content:center;background:linear-gradient(160deg,#8f1006 0%,#660f08 55%,#3d0a05 100%)}
+.vc-student img{height:100%;width:auto;max-width:100%;object-fit:contain;object-position:bottom}
+.vc-student-text{position:absolute;left:24px;top:22px;color:#fff;z-index:1}
+.vc-student-text h5{margin:0;font-size:22px;font-weight:700;color:#fff}
+.vc-student-text p{margin:2px 0 0;font-size:13px;opacity:.85}
+.leaflet-container{z-index:0}
+.vc-camera-fab{position:fixed;right:24px;bottom:24px;z-index:900;display:flex;align-items:center;gap:8px;padding:13px 18px;border:0;border-radius:999px;background:#8f1006;color:#fff;box-shadow:0 10px 24px rgba(61,10,5,.35);font-weight:700;cursor:pointer;transition:transform .2s,box-shadow .2s}
+.vc-camera-fab:hover{transform:translateY(-2px);box-shadow:0 14px 28px rgba(61,10,5,.42)}
+.vc-camera-fab:focus-visible,.vc-camera-close:focus-visible,.vc-camera-primary:focus-visible,.vc-camera-secondary:focus-visible{outline:3px solid #f4b740;outline-offset:3px}
+.vc-camera-fab i{font-size:18px}
+.vc-camera-backdrop{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(42,20,18,.62)}
+.vc-camera-dialog{width:min(460px,100%);padding:20px;border-radius:18px;background:#fff;box-shadow:0 20px 50px rgba(42,20,18,.32)}
+.vc-camera-close{width:32px;height:32px;border:0;border-radius:50%;background:#f5efed;color:#6b3029;font-size:24px;line-height:1;cursor:pointer}
+.vc-camera-preview{display:block;width:100%;max-height:55vh;border-radius:12px;background:#f5efed;object-fit:contain}
+.vc-camera-stage{position:relative;overflow:hidden;border-radius:12px;background:#1f2937}
+.vc-camera-stage .vc-camera-preview{border-radius:0}
+.vc-camera-boxes{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.vc-camera-count{position:absolute;top:10px;left:10px;padding:5px 9px;border-radius:999px;background:rgba(31,41,55,.82);color:#fff;font-size:12px;font-weight:700;pointer-events:none}
+.vc-camera-message{margin:12px 0 0;color:#28754e;font-size:13px}
+.vc-camera-message.is-error{color:#b42318}
+.vc-camera-results{display:grid;gap:8px;max-height:150px;overflow:auto;margin:12px 0 0;padding:0;list-style:none}
+.vc-camera-results li{display:flex;justify-content:space-between;gap:12px;padding:8px 10px;border-radius:8px;background:#f8f2f0;color:#4a201b;font-size:12px}
+.vc-camera-results li span{text-align:right}
+.vc-camera-primary,.vc-camera-secondary{border-radius:8px;padding:9px 13px;font-size:13px;font-weight:600;cursor:pointer}
+.vc-camera-primary{border:1px solid #8f1006;background:#8f1006;color:#fff}
+.vc-camera-primary:disabled{cursor:wait;opacity:.65}
+.vc-camera-secondary{border:1px solid #dccbc7;background:#fff;color:#6b3029}
+.vc-camera-live-status{align-self:center;color:#b42318;font-size:13px;font-weight:700}
+@media (max-width:640px){.vc-camera-fab{right:16px;bottom:16px}.vc-camera-fab span{display:none}.vc-camera-fab{width:52px;height:52px;justify-content:center;padding:0}.vc-camera-dialog{padding:16px}}

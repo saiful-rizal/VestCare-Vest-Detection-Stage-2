@@ -1,0 +1,51 @@
+{
+  "run_dir": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n",
+  "evaluation_dir": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n\\evaluation",
+  "raw_dir": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n\\evaluation\\raw",
+  "reports_dir": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n\\evaluation\\reports",
+  "plots_dir": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n\\evaluation\\grafik",
+  "ultralytics_plots_dir": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n\\evaluation\\ultralytics\\total_val",
+  "log": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n\\evaluation\\evaluation_20261107_091624.log",
+  "images_evaluated": 312,
+  "classes": [
+    "pohon",
+    "mobil",
+    "motor",
+    "orang",
+    "lubang"
+  ],
+  "metrics": {
+    "mask_p": 0.8835905663700231,
+    "mask_r": 0.7864494449585531,
+    "mask_f1": 0.8321948046496218,
+    "mask_map50": 0.8566920534090698,
+    "mask_map5095": 0.5925898822525183,
+    "box_p": 0.8848258189313738,
+    "box_r": 0.7858663164872239,
+    "box_f1": 0.8324152515174994,
+    "box_map50": 0.8702729127786947,
+    "box_map5095": 0.6604257994167025,
+    "speed_ms_ultralytics": {
+      "preprocess": 0.501415063855604,
+      "inference": 13.589456410441834,
+      "loss": 0.005620192379678767,
+      "postprocess": 1.9657951920285435
+    }
+  },
+  "raw_files": [
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n\\evaluation\\raw\\evaluation_20261107_091624.log",
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n\\evaluation\\raw\\kecepatan.json",
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n\\evaluation\\raw\\kesalahan_gambar.csv",
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n\\evaluation\\raw\\per_kelas.csv",
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n\\evaluation\\raw\\per_varian.csv",
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n\\evaluation\\raw\\ringkasan_test.json",
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n\\evaluation\\raw\\tingkat_gambar_per_kelas.csv",
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n\\evaluation\\raw\\val\\predictions.json"
+  ],
+  "plots": [
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n\\evaluation\\grafik\\1_ringkasan_total.png",
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n\\evaluation\\grafik\\2_per_kelas.png",
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n\\evaluation\\grafik\\3_per_varian.png",
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n\\evaluation\\grafik\\4_tingkat_gambar.png"
+  ]
+}

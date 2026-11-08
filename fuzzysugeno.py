@@ -442,7 +442,8 @@ def analisis_hasil(
     if res.boxes is not None and len(res.boxes) > 0:
         polys = res.masks.xy if res.masks is not None else [None] * len(res.boxes)
 
-        for box, poly in zip(res.boxes, polys):
+        for index, box in enumerate(res.boxes):
+            poly = polys[index] if index < len(polys) else None
             conf = float(box.conf)
 
             if conf < conf_min:
