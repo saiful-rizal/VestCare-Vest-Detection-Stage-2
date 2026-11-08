@@ -17,6 +17,7 @@ from pathlib import Path
 import sys
 from typing import Any, Optional
 from urllib.error import HTTPError, URLError
+import urllib.parse
 from urllib.request import Request as UrlRequest, urlopen
 
 import numpy as np
@@ -64,6 +65,8 @@ SUPABASE_DEVICE_ID = os.environ.get(
 SUPABASE_SYNC_LOCK = threading.Lock()
 SUPABASE_LAST_SIGNATURE = ""
 SUPABASE_LAST_SAVED_AT = 0.0
+SUPABASE_CONNECTED = False
+SUPABASE_CONNECTION_ERROR: Optional[str] = None
 
 
 def api_key_is_configured(value: Optional[str]) -> bool:
@@ -495,8 +498,115 @@ def _simpan_riwayat(hasil_dict: dict, sumber: str):
     return entri
 
 
+def _hubungkan_perangkat_supabase() -> str:
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        raise RuntimeError(
+            "Atur SUPABASE_URL dan SUPABASE_SERVICE_ROLE_KEY di .env server."
+        )
+    try:
+        device_id = str(uuid.UUID(SUPABASE_DEVICE_ID))
+    except ValueError as error:
+        raise ValueError("VEST_SUPABASE_DEVICE_ID harus berupa UUID yang valid.") from error
+
+    created_at = datetime.now().astimezone().isoformat()
+    request = UrlRequest(
+        f"{SUPABASE_URL}/rest/v1/devices?on_conflict=id",
+        data=json.dumps([{
+            "id": device_id,
+            "name": "VestCare Server",
+            "student_name": "Perangkat sementara",
+            "school": "Server VestCare",
+            "online": True,
+            "last_seen": created_at,
+        }]).encode("utf-8"),
+        headers={
+            "apikey": SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "resolution=merge-duplicates,return=minimal",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=8) as response:
+            if response.status not in (200, 201, 204):
+                raise RuntimeError(f"Supabase devices mengembalikan HTTP {response.status}.")
+    except HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"Supabase devices mengembalikan HTTP {error.code}: {detail or error.reason}"
+        ) from error
+    except URLError as error:
+        reason = getattr(error, "reason", error)
+        raise RuntimeError(f"Gagal menghubungi Supabase devices: {reason}") from error
+    return device_id
+
+
+def _deduplikasi_deteksi_supabase(device_id: str) -> int:
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+    }
+    query = urllib.parse.urlencode({
+        "device_id": f"eq.{device_id}",
+        "select": "id,object,created_at",
+        "order": "created_at.desc,id.desc",
+        "limit": "1000",
+    })
+    try:
+        with urlopen(UrlRequest(f"{SUPABASE_URL}/rest/v1/detections?{query}", headers=headers), timeout=8) as response:
+            detections = json.loads(response.read().decode("utf-8"))
+    except HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"Gagal membaca duplikat detections dari Supabase (HTTP {error.code}): {detail or error.reason}"
+        ) from error
+    except (URLError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Gagal membaca detections Supabase untuk deduplikasi: {error}") from error
+    if not isinstance(detections, list):
+        raise RuntimeError("Supabase mengembalikan format detections yang tidak valid.")
+
+    latest_by_object: set[str] = set()
+    duplicate_ids: list[str] = []
+    for row in detections:
+        object_name = str(row.get("object", "")).strip().lower()
+        if not object_name:
+            continue
+        if object_name in latest_by_object:
+            duplicate_ids.append(str(row["id"]))
+        else:
+            latest_by_object.add(object_name)
+
+    for start in range(0, len(duplicate_ids), 100):
+        batch = duplicate_ids[start:start + 100]
+        id_filter = ",".join(batch)
+        path = f"detections?device_id=eq.{device_id}&id=in.({id_filter})"
+        request = UrlRequest(
+            f"{SUPABASE_URL}/rest/v1/{path}",
+            headers={
+                **headers,
+                "Prefer": "return=minimal",
+            },
+            method="DELETE",
+        )
+        try:
+            with urlopen(request, timeout=8) as response:
+                if response.status not in (200, 204):
+                    raise RuntimeError(f"Supabase deduplikasi mengembalikan HTTP {response.status}.")
+        except HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace").strip()
+            raise RuntimeError(
+                f"Gagal menghapus duplikat detections (HTTP {error.code}): {detail or error.reason}"
+            ) from error
+        except URLError as error:
+            reason = getattr(error, "reason", error)
+            raise RuntimeError(f"Gagal menghapus duplikat detections: {reason}") from error
+    return len(duplicate_ids)
+
+
 def _simpan_deteksi_supabase(entri: dict) -> dict[str, Any]:
     global SUPABASE_LAST_SIGNATURE, SUPABASE_LAST_SAVED_AT
+    global SUPABASE_CONNECTED, SUPABASE_CONNECTION_ERROR
 
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         raise RuntimeError(
@@ -507,10 +617,17 @@ def _simpan_deteksi_supabase(entri: dict) -> dict[str, Any]:
     except ValueError as error:
         raise ValueError("VEST_SUPABASE_DEVICE_ID harus berupa UUID yang valid.") from error
 
-    deteksi = [
-        item for item in entri.get("deteksi", [])
-        if not item.get("ragu")
-    ]
+    latest_by_object = {}
+    for item in entri.get("deteksi", []):
+        if item.get("ragu"):
+            continue
+        object_name = str(item.get("kelas", item.get("object", ""))).strip().lower()
+        if not object_name:
+            continue
+        current = latest_by_object.get(object_name)
+        if current is None or float(item.get("urgensi", 0) or 0) > float(current.get("urgensi", 0) or 0):
+            latest_by_object[object_name] = item
+    deteksi = list(latest_by_object.values())
     if not deteksi:
         return {"supabase_tersimpan": True, "supabase_jumlah": 0}
 
@@ -530,17 +647,20 @@ def _simpan_deteksi_supabase(entri: dict) -> dict[str, Any]:
             "Content-Type": "application/json",
         }
 
-        def kirim(path: str, payload: list[dict], prefer: str) -> None:
+        def request_supabase(path: str, method: str, payload: Optional[list[dict]] = None,
+                             prefer: str = "return=minimal") -> Any:
             request = UrlRequest(
                 f"{SUPABASE_URL}/rest/v1/{path}",
-                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None,
                 headers={**headers, "Prefer": prefer},
-                method="POST",
+                method=method,
             )
             try:
                 with urlopen(request, timeout=8) as response:
                     if response.status not in (200, 201, 204):
                         raise RuntimeError(f"Supabase {path} mengembalikan HTTP {response.status}.")
+                    body = response.read().decode("utf-8")
+                    return json.loads(body) if body else None
             except HTTPError as error:
                 detail = error.read().decode("utf-8", errors="replace").strip()
                 raise RuntimeError(
@@ -550,32 +670,70 @@ def _simpan_deteksi_supabase(entri: dict) -> dict[str, Any]:
                 reason = getattr(error, "reason", error)
                 raise RuntimeError(f"Gagal menghubungi Supabase {path}: {reason}") from error
 
-        kirim(
-            "devices?on_conflict=id",
-            [{
-                "id": device_id,
-                "name": "VestCare Server",
-                "student_name": "Perangkat sementara",
-                "school": "Server VestCare",
-                "online": True,
-                "last_seen": created_at,
-            }],
-            "resolution=merge-duplicates,return=minimal",
-        )
+        _hubungkan_perangkat_supabase()
+        SUPABASE_CONNECTED = True
+        SUPABASE_CONNECTION_ERROR = None
 
         posisi = entri.get("posisi") or {}
+        tingkat_ke_urgensi = {
+            "BAHAYA": "Tinggi",
+            "WASPADA": "Sedang",
+            "INFO": "Rendah",
+            "AMAN": "Rendah",
+        }
         rows = [{
             "device_id": device_id,
             "object": str(item.get("kelas", item.get("object", "Tidak dikenal"))),
             "distance_m": float(item.get("jarak_m", item.get("distance_m", 0)) or 0),
             "confidence": float(item.get("conf", item.get("confidence", 0)) or 0),
-            "urgency": str(item.get("level", item.get("urgency", "INFO"))).upper(),
+            "urgency": tingkat_ke_urgensi.get(
+                str(item.get("level", item.get("urgency", "INFO"))).upper(),
+                "Sedang",
+            ),
             "lat": posisi.get("lat"),
             "lng": posisi.get("lng"),
             "urgency_score": float(item.get("urgensi", item.get("urgency_score", 0)) or 0),
             "created_at": created_at,
         } for item in deteksi]
-        kirim("detections", rows, "return=minimal")
+        existing_query = urllib.parse.urlencode({
+            "device_id": f"eq.{device_id}",
+            "select": "id,object",
+            "order": "created_at.desc,id.desc",
+            "limit": "1000",
+        })
+        existing_rows = request_supabase(f"detections?{existing_query}", "GET") or []
+        latest_id_by_object = {}
+        duplicate_ids = []
+        for existing in existing_rows:
+            object_name = str(existing.get("object", "")).strip().lower()
+            if not object_name:
+                continue
+            if object_name in latest_id_by_object:
+                duplicate_ids.append(str(existing["id"]))
+            else:
+                latest_id_by_object[object_name] = str(existing["id"])
+
+        inserts = []
+        for row in rows:
+            existing_id = latest_id_by_object.get(row["object"].lower())
+            if existing_id is None:
+                inserts.append(row)
+            else:
+                request_supabase(
+                    f"detections?id=eq.{urllib.parse.quote(existing_id, safe='')}&device_id=eq.{device_id}",
+                    "PATCH",
+                    [row],
+                )
+                latest_id_by_object.pop(row["object"].lower())
+
+        if inserts:
+            request_supabase("detections", "POST", inserts)
+        for start in range(0, len(duplicate_ids), 100):
+            id_filter = ",".join(duplicate_ids[start:start + 100])
+            request_supabase(
+                f"detections?device_id=eq.{device_id}&id=in.({id_filter})",
+                "DELETE",
+            )
 
         SUPABASE_LAST_SIGNATURE = signature
         SUPABASE_LAST_SAVED_AT = now
@@ -729,7 +887,84 @@ def status():
         "api_terproteksi": API_KEY_CONFIGURED,
         "pustaka_suara_siap": PERENCANA_SUARA is not None,
         "supabase_sinkronisasi_aktif": bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY),
+        "supabase_terhubung": SUPABASE_CONNECTED,
+        "supabase_device_id": SUPABASE_DEVICE_ID if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY else None,
         "waktu_server": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+@app.on_event("startup")
+async def hubungkan_supabase_saat_server_mulai():
+    global SUPABASE_CONNECTED, SUPABASE_CONNECTION_ERROR
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        SUPABASE_CONNECTION_ERROR = "Konfigurasi Supabase belum lengkap."
+        print(f"[SUPABASE] {SUPABASE_CONNECTION_ERROR}")
+        return
+    try:
+        device_id = await run_in_threadpool(_hubungkan_perangkat_supabase)
+        removed = await run_in_threadpool(_deduplikasi_deteksi_supabase, device_id)
+    except (RuntimeError, ValueError) as error:
+        SUPABASE_CONNECTED = False
+        SUPABASE_CONNECTION_ERROR = str(error)
+        print(f"[SUPABASE] Koneksi saat startup gagal: {SUPABASE_CONNECTION_ERROR}")
+        return
+
+    SUPABASE_CONNECTED = True
+    SUPABASE_CONNECTION_ERROR = None
+    print(
+        f"[SUPABASE] Terhubung. Perangkat server: {device_id}; "
+        f"duplikat kelas dihapus: {removed}"
+    )
+
+
+@app.get("/dashboard/data")
+def dashboard_data(request: Request, x_api_key: Optional[str] = Header(None)):
+    _cek_api_key(request, x_api_key)
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        raise HTTPException(status_code=503, detail="Sinkronisasi Supabase belum dikonfigurasi.")
+    try:
+        device_id = str(uuid.UUID(SUPABASE_DEVICE_ID))
+    except ValueError as error:
+        raise HTTPException(status_code=500, detail="ID perangkat Supabase tidak valid.") from error
+
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+    }
+
+    def baca_tabel(path: str) -> list[dict[str, Any]]:
+        url = f"{SUPABASE_URL}/rest/v1/{path}"
+        try:
+            with urlopen(UrlRequest(url, headers=headers), timeout=8) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace").strip()
+            raise HTTPException(
+                status_code=502,
+                detail=f"Supabase menolak pembacaan dashboard (HTTP {error.code}): {detail or error.reason}",
+            ) from error
+        except (URLError, json.JSONDecodeError) as error:
+            raise HTTPException(status_code=502, detail=f"Gagal membaca Supabase untuk dashboard: {error}") from error
+        if not isinstance(data, list):
+            raise HTTPException(status_code=502, detail="Supabase mengembalikan format data dashboard yang tidak valid.")
+        return data
+
+    device_rows = baca_tabel(
+        f"devices?id=eq.{device_id}&select=id,name,student_name,school,battery,online,last_seen&limit=1"
+    )
+    detections = baca_tabel(
+        f"detections?device_id=eq.{device_id}"
+        "&select=id,device_id,object,distance_m,confidence,urgency,lat,lng,urgency_score,created_at"
+        "&order=created_at.desc,urgency_score.desc&limit=100"
+    )
+    gps_rows = baca_tabel(
+        f"gps_log?device_id=eq.{device_id}"
+        "&select=id,device_id,lat,lng,accuracy,created_at&order=created_at.desc&limit=1"
+    )
+    return {
+        "device": device_rows[0] if device_rows else None,
+        "detections": detections,
+        "gps": gps_rows[0] if gps_rows else None,
     }
 
 

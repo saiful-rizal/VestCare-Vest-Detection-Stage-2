@@ -40,7 +40,12 @@ export function normalizeDetections(payload) {
   return items.filter((item) => !item.ragu).map((item) => {
     const confidence = Number(item.confidence ?? item.score ?? item.conf ?? 0);
     const className = item.object || item.class || item.label || item.kelas;
-    const level = String(item.level ?? item.urgency ?? "").toUpperCase();
+    const rawLevel = String(item.level ?? item.urgency ?? "").toUpperCase();
+    const level = ({
+      TINGGI: "BAHAYA",
+      SEDANG: "WASPADA",
+      RENDAH: "INFO",
+    })[rawLevel] || rawLevel;
     const rawUrgency = item.urgency;
     const urgencyLabels = { BAHAYA: "Tinggi", WASPADA: "Sedang", INFO: "Rendah", AMAN: "Rendah" };
     const createdAt = item.created_at ? new Date(item.created_at) : null;

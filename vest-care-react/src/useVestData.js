@@ -28,44 +28,89 @@ export default function useVestData() {
         const device = devices[0] || null;
 
         if (!device) {
-          const [statusResponse, historyResponse] = await Promise.all([
-            fetch("/status", { credentials: "same-origin" }),
-            fetch("/riwayat?limit=20", { credentials: "same-origin" }),
-          ]);
+          const statusResponse = await fetch("/status", { credentials: "same-origin" });
           const statusPayload = await statusResponse.json();
-          const historyPayload = await historyResponse.json();
           if (!statusResponse.ok) {
             throw new Error(statusPayload.detail || `Server VestCare mengembalikan ${statusResponse.status}.`);
           }
-          if (!historyResponse.ok) {
-            throw new Error(historyPayload.detail || `Riwayat server mengembalikan ${historyResponse.status}.`);
+
+          let serverData = null;
+          if (statusPayload.supabase_sinkronisasi_aktif && statusPayload.supabase_device_id) {
+            const response = await fetch("/dashboard/data", { credentials: "same-origin" });
+            serverData = await response.json();
+            if (!response.ok) {
+              throw new Error(serverData.detail || `Dashboard Supabase mengembalikan ${response.status}.`);
+            }
           }
-          if (!Array.isArray(historyPayload.data)) {
-            throw new Error("Respons riwayat server tidak valid.");
+          const serverDetections = serverData?.detections || [];
+
+          let latestDetections;
+          let history;
+          let serverPosition = null;
+          const gps = serverData?.gps;
+          const detectionWithLocation = serverDetections.find((item) => item.lat != null && item.lng != null);
+          const coordinates = gps || detectionWithLocation;
+          if (coordinates) {
+            serverPosition = {
+              lat: Number(coordinates.lat),
+              lng: Number(coordinates.lng),
+              updated: coordinates.created_at
+                ? new Date(coordinates.created_at).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+                : "",
+            };
           }
 
-          const latest = historyPayload.data[0];
-          const latestDetections = latest ? normalizeDetections(latest) : [];
-          const history = historyPayload.data.flatMap((entry) => normalizeDetections(entry));
-          const serverPosition = latest?.lat != null && latest?.lng != null
-            ? {
-              lat: Number(latest.lat),
-              lng: Number(latest.lng),
-              updated: latest.waktu || "",
+          if (serverDetections.length) {
+            const latestTimestamp = serverDetections[0].created_at;
+            const latestRows = serverDetections.filter((item) => item.created_at === latestTimestamp);
+            latestDetections = normalizeDetections(latestRows).sort((a, b) => {
+              const rank = { BAHAYA: 3, WASPADA: 2, INFO: 1, AMAN: 0 };
+              return (rank[b.level] || 0) - (rank[a.level] || 0)
+                || Number(b.urgensi ?? b.urgency_score ?? 0) - Number(a.urgensi ?? a.urgency_score ?? 0);
+            });
+            history = normalizeDetections(serverDetections).slice(0, 20);
+          } else {
+            const historyResponse = await fetch("/riwayat?limit=20", { credentials: "same-origin" });
+            const historyPayload = await historyResponse.json();
+            if (!historyResponse.ok) {
+              throw new Error(historyPayload.detail || `Riwayat server mengembalikan ${historyResponse.status}.`);
             }
-            : null;
+            if (!Array.isArray(historyPayload.data)) {
+              throw new Error("Respons riwayat server tidak valid.");
+            }
+
+            const latest = historyPayload.data[0];
+            latestDetections = latest ? normalizeDetections(latest) : [];
+            history = historyPayload.data.flatMap((entry) => normalizeDetections(entry));
+            serverPosition = latest?.lat != null && latest?.lng != null
+              ? {
+                lat: Number(latest.lat),
+                lng: Number(latest.lng),
+                updated: latest.waktu || "",
+              }
+              : null;
+          }
 
           if (active) {
             setState((current) => ({
               ...current,
-              device: {
-                id: null,
-                online: Boolean(statusPayload.engine_siap),
-                battery: null,
-                name: "Perangkat Sementara (Server)",
-                studentName: null,
-                school: null,
-              },
+              device: serverData?.device
+                ? {
+                  id: serverData.device.id,
+                  online: Boolean(serverData.device.online),
+                  battery: serverData.device.battery == null ? null : Number(serverData.device.battery),
+                  name: serverData.device.name,
+                  studentName: serverData.device.student_name,
+                  school: serverData.device.school,
+                }
+                : {
+                  id: statusPayload.supabase_device_id || null,
+                  online: Boolean(statusPayload.engine_siap),
+                  battery: null,
+                  name: "Perangkat Sementara (Server)",
+                  studentName: null,
+                  school: null,
+                },
               position: serverPosition,
               detections: latestDetections,
               history: history.slice(0, 20),

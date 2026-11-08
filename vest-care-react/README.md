@@ -5,8 +5,9 @@
     npm run build    # hasil di dist/
 
 - Data dashboard membaca `devices`, `detections`, dan `gps_log`; deteksi terakhir, urgensi, serta jumlah lima kelas dihitung dari batch deteksi terbaru. Panel riwayat menampilkan 20 objek terbaru dari Supabase, atau dari server saat perangkat belum terlihat.
-- `.env.local` pada folder dashboard hanya memakai `VITE_SUPABASE_URL` dan `VITE_SUPABASE_ANON_KEY` untuk membaca data. Jangan taruh secret/service-role key di variabel `VITE_*`.
+- `.env.local` pada folder dashboard memakai `NEXT_PUBLIC_SUPABASE_URL` dan `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` untuk membaca data (alias `VITE_*` lama masih didukung). Nilai `NEXT_PUBLIC_*` masuk ke bundle browser; jangan taruh secret/service-role key di sana.
 - Setiap hasil kamera disimpan server secara lokal dan dikirim server ke tabel `detections`. Backend membuat/memperbarui perangkat sementara `VestCare Server` dan mengaitkan setiap objek dengan `device_id` tetap. Objek dalam satu frame memakai timestamp sama agar dapat dikelompokkan sebagai batch. Frame identik dibatasi maksimal sekali tiap 10 detik; perubahan deteksi dikirim langsung.
+- Saat server FastAPI mulai, backend otomatis menghubungi Supabase dan membuat/memperbarui perangkat virtual. Status koneksi tersedia di `/status`; bila koneksi startup gagal, server tetap berjalan dan menuliskan penyebabnya ke log.
 - Untuk mengaktifkan penulisan, isi `SUPABASE_URL` dan `SUPABASE_SERVICE_ROLE_KEY` di `.env` root (lihat `.env.example`), lalu restart server. Service-role key hanya ada di backend. Pastikan tabel menerima kolom sesuai skema pada database; server akan menampilkan status kegagalan sinkronisasi pada dialog kamera.
 - Profil siswa: objek `profile` di `src/data.js`.
 - Foto: `src/assets/img/student.png` dan `avatar.png`.
