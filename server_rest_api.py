@@ -16,8 +16,8 @@ from datetime import datetime
 from pathlib import Path
 import sys
 from typing import Any, Optional
-from urllib.error import URLError
-from urllib.request import urlopen
+from urllib.error import HTTPError, URLError
+from urllib.request import Request as UrlRequest, urlopen
 
 import numpy as np
 from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
@@ -53,6 +53,18 @@ def load_project_env() -> None:
         os.environ.setdefault(key, value)
 
 load_project_env()
+
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+SUPABASE_DEVICE_ID = os.environ.get(
+    "VEST_SUPABASE_DEVICE_ID",
+    str(uuid.uuid5(uuid.NAMESPACE_URL, "vestcare-server-device")),
+).strip()
+SUPABASE_SYNC_LOCK = threading.Lock()
+SUPABASE_LAST_SIGNATURE = ""
+SUPABASE_LAST_SAVED_AT = 0.0
+
 
 def api_key_is_configured(value: Optional[str]) -> bool:
     if value is None or len(value.strip()) < 32:
@@ -472,7 +484,102 @@ def _simpan_riwayat(hasil_dict: dict, sumber: str):
     }
     with open(RIWAYAT_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(entri, ensure_ascii=False) + "\n")
+    try:
+        sinkronisasi = _simpan_deteksi_supabase(entri)
+    except (OSError, ValueError, RuntimeError) as error:
+        sinkronisasi = {
+            "supabase_tersimpan": False,
+            "supabase_error": str(error),
+        }
+    entri.update(sinkronisasi)
     return entri
+
+
+def _simpan_deteksi_supabase(entri: dict) -> dict[str, Any]:
+    global SUPABASE_LAST_SIGNATURE, SUPABASE_LAST_SAVED_AT
+
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        raise RuntimeError(
+            "Atur SUPABASE_URL dan SUPABASE_SERVICE_ROLE_KEY di .env server untuk menyimpan riwayat."
+        )
+    try:
+        device_id = str(uuid.UUID(SUPABASE_DEVICE_ID))
+    except ValueError as error:
+        raise ValueError("VEST_SUPABASE_DEVICE_ID harus berupa UUID yang valid.") from error
+
+    deteksi = [
+        item for item in entri.get("deteksi", [])
+        if not item.get("ragu")
+    ]
+    if not deteksi:
+        return {"supabase_tersimpan": True, "supabase_jumlah": 0}
+
+    signature = "|".join(sorted(
+        f"{item.get('kelas', item.get('object', ''))}:{item.get('level', '')}:{item.get('arah', '')}"
+        for item in deteksi
+    ))
+    now = time.monotonic()
+    with SUPABASE_SYNC_LOCK:
+        if signature == SUPABASE_LAST_SIGNATURE and now - SUPABASE_LAST_SAVED_AT < 10:
+            return {"supabase_tersimpan": True, "supabase_jumlah": 0}
+
+        created_at = datetime.now().astimezone().isoformat()
+        headers = {
+            "apikey": SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+            "Content-Type": "application/json",
+        }
+
+        def kirim(path: str, payload: list[dict], prefer: str) -> None:
+            request = UrlRequest(
+                f"{SUPABASE_URL}/rest/v1/{path}",
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={**headers, "Prefer": prefer},
+                method="POST",
+            )
+            try:
+                with urlopen(request, timeout=8) as response:
+                    if response.status not in (200, 201, 204):
+                        raise RuntimeError(f"Supabase {path} mengembalikan HTTP {response.status}.")
+            except HTTPError as error:
+                detail = error.read().decode("utf-8", errors="replace").strip()
+                raise RuntimeError(
+                    f"Supabase {path} mengembalikan HTTP {error.code}: {detail or error.reason}"
+                ) from error
+            except URLError as error:
+                reason = getattr(error, "reason", error)
+                raise RuntimeError(f"Gagal menghubungi Supabase {path}: {reason}") from error
+
+        kirim(
+            "devices?on_conflict=id",
+            [{
+                "id": device_id,
+                "name": "VestCare Server",
+                "student_name": "Perangkat sementara",
+                "school": "Server VestCare",
+                "online": True,
+                "last_seen": created_at,
+            }],
+            "resolution=merge-duplicates,return=minimal",
+        )
+
+        posisi = entri.get("posisi") or {}
+        rows = [{
+            "device_id": device_id,
+            "object": str(item.get("kelas", item.get("object", "Tidak dikenal"))),
+            "distance_m": float(item.get("jarak_m", item.get("distance_m", 0)) or 0),
+            "confidence": float(item.get("conf", item.get("confidence", 0)) or 0),
+            "urgency": str(item.get("level", item.get("urgency", "INFO"))).upper(),
+            "lat": posisi.get("lat"),
+            "lng": posisi.get("lng"),
+            "urgency_score": float(item.get("urgensi", item.get("urgency_score", 0)) or 0),
+            "created_at": created_at,
+        } for item in deteksi]
+        kirim("detections", rows, "return=minimal")
+
+        SUPABASE_LAST_SIGNATURE = signature
+        SUPABASE_LAST_SAVED_AT = now
+        return {"supabase_tersimpan": True, "supabase_jumlah": len(rows)}
 
 
 def _baca_riwayat(limit: int):
@@ -621,6 +728,7 @@ def status():
         "engine_siap": ENGINE is not None,
         "api_terproteksi": API_KEY_CONFIGURED,
         "pustaka_suara_siap": PERENCANA_SUARA is not None,
+        "supabase_sinkronisasi_aktif": bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY),
         "waktu_server": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -638,7 +746,7 @@ async def deteksi(
     hasil = await run_in_threadpool(_jalankan_deteksi, img, jarak_m)
     data = InferensiVest.ke_dict(hasil)
     data["suara"] = _rencana_suara(data)
-    entri = _simpan_riwayat(data, sumber="deteksi")
+    entri = await run_in_threadpool(_simpan_riwayat, data, "deteksi")
     return JSONResponse(entri)
 
 
@@ -655,7 +763,7 @@ async def deteksi_suara(
     hasil = await run_in_threadpool(_jalankan_deteksi, img, jarak_m)
     data = InferensiVest.ke_dict(hasil)
     data["suara"] = _rencana_suara(data)
-    entri = _simpan_riwayat(data, sumber="deteksi_suara")
+    entri = await run_in_threadpool(_simpan_riwayat, data, "deteksi_suara")
     return JSONResponse(entri)
 
 

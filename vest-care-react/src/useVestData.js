@@ -1,14 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { initialState, normalizeDetections } from "./data";
 import { supabase } from "./supabaseClient";
 
 // Satu-satunya tempat data hidup. Komponen lain hanya menerima props.
 export default function useVestData() {
   const [state, setState] = useState(initialState);
-  const deviceIdRef = useRef(null);
-  const positionRef = useRef(null);
-  const lastSavedSignatureRef = useRef("");
-  const lastSavedAtRef = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -30,12 +26,62 @@ export default function useVestData() {
         if (deviceError) throw new Error(`Gagal membaca tabel devices: ${deviceError.message}`);
 
         const device = devices[0] || null;
-        deviceIdRef.current = device?.id || null;
+
+        if (!device) {
+          const [statusResponse, historyResponse] = await Promise.all([
+            fetch("/status", { credentials: "same-origin" }),
+            fetch("/riwayat?limit=20", { credentials: "same-origin" }),
+          ]);
+          const statusPayload = await statusResponse.json();
+          const historyPayload = await historyResponse.json();
+          if (!statusResponse.ok) {
+            throw new Error(statusPayload.detail || `Server VestCare mengembalikan ${statusResponse.status}.`);
+          }
+          if (!historyResponse.ok) {
+            throw new Error(historyPayload.detail || `Riwayat server mengembalikan ${historyResponse.status}.`);
+          }
+          if (!Array.isArray(historyPayload.data)) {
+            throw new Error("Respons riwayat server tidak valid.");
+          }
+
+          const latest = historyPayload.data[0];
+          const latestDetections = latest ? normalizeDetections(latest) : [];
+          const history = historyPayload.data.flatMap((entry) => normalizeDetections(entry));
+          const serverPosition = latest?.lat != null && latest?.lng != null
+            ? {
+              lat: Number(latest.lat),
+              lng: Number(latest.lng),
+              updated: latest.waktu || "",
+            }
+            : null;
+
+          if (active) {
+            setState((current) => ({
+              ...current,
+              device: {
+                id: null,
+                online: Boolean(statusPayload.engine_siap),
+                battery: null,
+                name: "Perangkat Sementara (Server)",
+                studentName: null,
+                school: null,
+              },
+              position: serverPosition,
+              detections: latestDetections,
+              history: history.slice(0, 20),
+              detectionHistoryLoading: false,
+              detectionHistoryError: null,
+            }));
+          }
+          return;
+        }
+
         let detectionsQuery = supabase
           .from("detections")
           .select("id,device_id,object,distance_m,confidence,urgency,lat,lng,urgency_score,created_at")
           .order("created_at", { ascending: false })
-          .limit(20);
+          .order("urgency_score", { ascending: false })
+          .limit(100);
         let gpsQuery = supabase
           .from("gps_log")
           .select("id,device_id,lat,lng,accuracy,created_at")
@@ -54,7 +100,16 @@ export default function useVestData() {
         if (detectionError) throw new Error(`Gagal membaca tabel detections: ${detectionError.message}`);
         if (gpsError) throw new Error(`Gagal membaca tabel gps_log: ${gpsError.message}`);
 
-        const detections = normalizeDetections(detectionRows || []);
+        const history = normalizeDetections(detectionRows || []);
+        const newestTimestamp = detectionRows[0]?.created_at;
+        const latestRows = newestTimestamp
+          ? detectionRows.filter((item) => item.created_at === newestTimestamp)
+          : [];
+        const detections = normalizeDetections(latestRows).sort((a, b) => {
+          const rank = { BAHAYA: 3, WASPADA: 2, INFO: 1, AMAN: 0 };
+          return (rank[b.level] || 0) - (rank[a.level] || 0)
+            || Number(b.urgensi ?? b.urgency_score ?? 0) - Number(a.urgensi ?? a.urgency_score ?? 0);
+        });
         const gps = gpsRows[0];
         const latestDetection = detectionRows[0];
         const coordinates = gps || (latestDetection?.lat != null && latestDetection?.lng != null
@@ -64,10 +119,11 @@ export default function useVestData() {
           ? {
             lat: Number(coordinates.lat),
             lng: Number(coordinates.lng),
-            updated: new Date(coordinates.created_at).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+            updated: coordinates.created_at
+              ? new Date(coordinates.created_at).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+              : "",
           }
           : null;
-        positionRef.current = position;
 
         if (active) {
           setState((current) => ({
@@ -84,6 +140,7 @@ export default function useVestData() {
               : initialState.device,
             position,
             detections,
+            history: history.slice(0, 20),
             detectionHistoryLoading: false,
             detectionHistoryError: null,
           }));
@@ -109,58 +166,5 @@ export default function useVestData() {
     };
   }, []);
 
-  const saveDetections = useCallback(async (detections) => {
-    if (!detections.length) {
-      lastSavedSignatureRef.current = "";
-      return;
-    }
-
-    if (!supabase) {
-      throw new Error("Konfigurasi Supabase belum lengkap.");
-    }
-
-    let deviceId = deviceIdRef.current;
-    if (!deviceId) {
-      const { data: devices, error } = await supabase
-        .from("devices")
-        .select("id")
-        .order("last_seen", { ascending: false, nullsFirst: false })
-        .limit(1);
-      if (error) throw new Error(`Gagal mencari perangkat di Supabase: ${error.message}`);
-      deviceId = devices[0]?.id || null;
-      deviceIdRef.current = deviceId;
-    }
-    if (!deviceId) {
-      throw new Error("Tidak ada perangkat yang dapat diakses di tabel devices; data deteksi belum dikirim.");
-    }
-
-    const signature = detections
-      .map((item) => `${item.object}:${item.level}:${item.arah || ""}`)
-      .sort()
-      .join("|");
-    const now = Date.now();
-    if (signature === lastSavedSignatureRef.current && now - lastSavedAtRef.current < 10000) return;
-
-    const position = positionRef.current;
-    const rows = detections.map((item) => ({
-      device_id: deviceId,
-      object: item.object,
-      distance_m: Number(item.distance) || 0,
-      confidence: Number(item.confidence) / 100 || 0,
-      urgency: item.level || "INFO",
-      urgency_score: Number(item.urgensi ?? item.urgency_score) || 0,
-      lat: position?.lat ?? null,
-      lng: position?.lng ?? null,
-    }));
-
-    const { error } = await supabase.from("detections").insert(rows);
-    if (error) {
-      throw new Error(`Gagal menyimpan deteksi ke Supabase: ${error.message}`);
-    }
-
-    lastSavedSignatureRef.current = signature;
-    lastSavedAtRef.current = now;
-  }, []);
-
-  return [state, setState, saveDetections];
+  return [state, setState];
 }

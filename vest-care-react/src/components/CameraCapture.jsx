@@ -276,12 +276,7 @@ export default function CameraCapture({ onDetections }) {
         const detections = normalizeDetections(payload);
         setLiveDetections(detections);
         renderBoxes(detections);
-        let saveError = null;
-        try {
-          await onDetectionsRef.current(detections);
-        } catch (error) {
-          saveError = error instanceof Error ? error.message : "Gagal mengirim deteksi ke Supabase.";
-        }
+        onDetectionsRef.current(detections);
         const alerts = detections.filter((detection) => detection.level !== "AMAN");
         const now = Date.now();
 
@@ -319,7 +314,9 @@ export default function CameraCapture({ onDetections }) {
             setMessage("Kamera aktif. Tidak ada objek yang cukup yakin.");
           }
         }
-        if (saveError) setMessage(`Deteksi berhasil, tetapi gagal disimpan ke Supabase: ${saveError}`);
+        if (payload.supabase_error) {
+          setMessage(`Deteksi berhasil, tetapi gagal disimpan ke Supabase: ${payload.supabase_error}`);
+        }
       } catch (error) {
         if (active) {
           setMessage(error instanceof Error ? `Deteksi gagal: ${error.message}` : "Deteksi real-time gagal.");
@@ -410,19 +407,16 @@ export default function CameraCapture({ onDetections }) {
 
       const payload = await response.json();
       const detections = normalizeDetections(payload);
-      let saveError = null;
-      try {
-        await onDetections(detections);
-      } catch (error) {
-        saveError = error instanceof Error ? error.message : "Gagal mengirim deteksi ke Supabase.";
-      }
+      onDetections(detections);
       setLiveDetections(detections);
       setStatus("success");
       setMessage(detections.length
         ? `${detections.length} objek terdeteksi.`
         : "Tidak ada objek yang cukup yakin.");
       if (payload.suara) await playPlan(payload.suara);
-      if (saveError) setMessage(`Deteksi berhasil, tetapi gagal disimpan ke Supabase: ${saveError}`);
+      if (payload.supabase_error) {
+        setMessage(`Deteksi berhasil, tetapi gagal disimpan ke Supabase: ${payload.supabase_error}`);
+      }
     } catch (error) {
       setStatus("error");
       setMessage(error instanceof Error ? error.message : "Deteksi gagal diproses.");

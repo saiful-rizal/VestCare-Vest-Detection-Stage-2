@@ -20,7 +20,7 @@ export default function DetectionHistory({ detections }) {
     <div className="w-full max-w-full px-3 mt-0 mb-6 lg:mb-0 lg:w-7/12 lg:flex-none">
       <div className="relative flex flex-col min-w-0 break-words bg-white border-0 border-solid shadow-xl dark:bg-slate-850 dark:shadow-dark-xl rounded-2xl bg-clip-border">
         <div className="p-4 pb-0 mb-0 rounded-t-4">
-          <h6 className="mb-2 dark:text-white">Objek terdeteksi sekarang</h6>
+          <h6 className="mb-2 dark:text-white">Riwayat deteksi</h6>
         </div>
         <div className="overflow-x-auto">
           <table className="items-center w-full mb-4 align-top border-collapse border-gray-200 dark:border-white/40">
@@ -40,6 +40,9 @@ export default function DetectionHistory({ detections }) {
                   <Cell label="Urgensi:" color={COLOR[d.urgency]}>{d.urgency}</Cell>
                 </tr>
               ))}
+              {!detections.length && (
+                <tr><td className={`${TD} text-center text-sm text-slate-500`} colSpan={4}>Belum ada riwayat deteksi.</td></tr>
+              )}
             </tbody>
           </table>
         </div>

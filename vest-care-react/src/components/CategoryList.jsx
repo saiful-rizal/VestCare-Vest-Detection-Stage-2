@@ -2,6 +2,8 @@ import { fmt } from "../data";
 
 const NAMES = [
   { name: "Lubang", icon: "ni-support-16" },
+  { name: "Mobil", icon: "ni-delivery-fast" },
+  { name: "Motor", icon: "ni-bus-front-12" },
   { name: "Orang", icon: "ni-satisfied" },
   { name: "Pohon", icon: "ni-world-2" },
 ];

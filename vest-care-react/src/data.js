@@ -1,6 +1,12 @@
 // Warna & helper yang dipakai banyak komponen
 export const COLOR = { Tinggi: "#c8281c", Sedang: "#d98a0b", Rendah: "#1f8a5b" };
-export const ICON = { Lubang: "ni-support-16", Orang: "ni-satisfied", Pohon: "ni-world-2" };
+export const ICON = {
+  Lubang: "ni-support-16",
+  Mobil: "ni-delivery-fast",
+  Motor: "ni-bus-front-12",
+  Orang: "ni-satisfied",
+  Pohon: "ni-world-2",
+};
 export const fmt = (n) => Number(n).toFixed(1).replace(".", ",");
 
 export const profile = {
@@ -14,6 +20,7 @@ export const initialState = {
   device: { online: false, battery: null, name: null, studentName: null, school: null },
   position: null,
   detections: [],
+  history: [],
   detectionHistoryLoading: true,
   detectionHistoryError: null,
 };

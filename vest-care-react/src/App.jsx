@@ -9,16 +9,15 @@ import CameraCapture from "./components/CameraCapture";
 import useVestData from "./useVestData";
 
 export default function App() {
-  const [{ device, position, detections, detectionHistoryLoading, detectionHistoryError }, setState, saveDetections] = useVestData();
+  const [{ device, position, detections, history, detectionHistoryLoading, detectionHistoryError }, setState] = useVestData();
 
-  async function addDetections(newDetections) {
+  function addDetections(newDetections) {
     setState((state) => ({
       ...state,
       detections: newDetections,
       detectionHistoryLoading: false,
       detectionHistoryError: null,
     }));
-    await saveDetections(newDetections);
   }
 
   return (
@@ -38,7 +37,7 @@ export default function App() {
             <StudentCard />
           </div>
           <div className="flex flex-wrap mt-6 -mx-3">
-            <DetectionHistory detections={detections} />
+            <DetectionHistory detections={history} />
             <CategoryList detections={detections} />
           </div>
           <Footer />

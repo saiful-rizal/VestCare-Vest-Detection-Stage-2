@@ -10,6 +10,7 @@ Sistem peringatan rintangan untuk rompi cerdas berbasis **segmentasi YOLO26n**, 
 - **Deteksi gerak objek** (`PelacakGerak`) untuk `mobil`, `motor`, dan `orang`: status `netral`, `bergerak`, atau `diam`.
 - **Penanda `ragu`**: deteksi dengan confidence di bawah `0.50` tetap dikirim di JSON, tetapi tidak dipakai untuk ringkasan, memori, suara, maupun UI.
 - **REST API FastAPI** + dashboard React dengan deteksi kamera otomatis multi-objek, kotak setiap objek, hasil deteksi langsung, dan instruksi suara.
+- **Riwayat Supabase**: backend menyinkronkan objek deteksi ke tabel `detections` dan memakai satu perangkat virtual server; konfigurasi URL dan secret/service-role key di `.env` root.
 - **Quality gate training** per kelas dengan ambang 98% (box P, box mAP50, mask P, mask mAP50).
 
 ## Struktur proyek
