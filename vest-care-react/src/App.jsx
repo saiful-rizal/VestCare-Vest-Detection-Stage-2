@@ -9,15 +9,16 @@ import CameraCapture from "./components/CameraCapture";
 import useVestData from "./useVestData";
 
 export default function App() {
-  const [{ device, position, detections, detectionHistoryLoading, detectionHistoryError }, setState] = useVestData();
+  const [{ device, position, detections, detectionHistoryLoading, detectionHistoryError }, setState, saveDetections] = useVestData();
 
-  function addDetections(newDetections) {
+  async function addDetections(newDetections) {
     setState((state) => ({
       ...state,
       detections: newDetections,
       detectionHistoryLoading: false,
       detectionHistoryError: null,
     }));
+    await saveDetections(newDetections);
   }
 
   return (

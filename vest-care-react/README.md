@@ -6,6 +6,7 @@
 
 - Data dashboard dibaca dari tabel Supabase `devices`, `detections`, dan `gps_log` melalui `src/useVestData.js`.
 - Atur `VITE_SUPABASE_URL` dan `VITE_SUPABASE_ANON_KEY` di `.env.local` pada folder ini. Gunakan publishable/anon key, aktifkan RLS, dan buat policy baca yang sesuai; jangan gunakan `service_role` key di browser.
+- Hasil kamera dikirim ke tabel `detections` untuk perangkat terbaru yang dapat dibaca oleh dashboard. Saat kamera live, data yang sama disimpan maksimal sekali tiap 10 detik; perubahan objek atau level urgensi disimpan langsung. Kebijakan RLS juga harus mengizinkan `INSERT`; deteksi yang gagal disimpan akan menampilkan pesan pada dialog kamera.
 - Profil siswa: objek `profile` di `src/data.js`.
 - Foto: `src/assets/img/student.png` dan `avatar.png`.
 - Peta & font butuh internet.
