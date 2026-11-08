@@ -4,7 +4,8 @@
     npm run dev      # http://localhost:5173
     npm run build    # hasil di dist/
 
-- Data: `src/data.js` (contoh) dan `src/useVestData.js` (tempat sambung ke Supabase).
+- Data dashboard dibaca dari tabel Supabase `devices`, `detections`, dan `gps_log` melalui `src/useVestData.js`.
+- Atur `VITE_SUPABASE_URL` dan `VITE_SUPABASE_ANON_KEY` di `.env.local` pada folder ini. Gunakan publishable/anon key, aktifkan RLS, dan buat policy baca yang sesuai; jangan gunakan `service_role` key di browser.
 - Profil siswa: objek `profile` di `src/data.js`.
 - Foto: `src/assets/img/student.png` dan `avatar.png`.
 - Peta & font butuh internet.

@@ -11,8 +11,8 @@ export const profile = {
 
 /* DATA CONTOH. Ganti dengan data dari Supabase di hook useVestData (src/useVestData.js). */
 export const initialState = {
-  device: { online: true, battery: 87 },
-  position: { lat: -6.1754, lng: 106.8272, updated: "08:30:12" },
+  device: { online: false, battery: null, name: null, studentName: null, school: null },
+  position: null,
   detections: [],
   detectionHistoryLoading: true,
   detectionHistoryError: null,
@@ -33,16 +33,22 @@ export function normalizeDetections(payload) {
   return items.filter((item) => !item.ragu).map((item) => {
     const confidence = Number(item.confidence ?? item.score ?? item.conf ?? 0);
     const className = item.object || item.class || item.label || item.kelas;
-    const level = String(item.level || "").toUpperCase();
+    const level = String(item.level ?? item.urgency ?? "").toUpperCase();
+    const rawUrgency = item.urgency;
+    const urgencyLabels = { BAHAYA: "Tinggi", WASPADA: "Sedang", INFO: "Rendah", AMAN: "Rendah" };
+    const createdAt = item.created_at ? new Date(item.created_at) : null;
+    const detectionTime = createdAt && !Number.isNaN(createdAt.getTime())
+      ? createdAt.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })
+      : time;
 
     return {
       ...item,
       object: className ? className[0].toUpperCase() + className.slice(1) : "Tidak dikenal",
       confidence: Number.isFinite(confidence) && confidence <= 1 ? confidence * 100 : confidence,
-      distance: Number(item.distance ?? item.jarak_m ?? 0) || 0,
+      distance: Number(item.distance ?? item.distance_m ?? item.jarak_m ?? 0) || 0,
       level,
-      urgency: item.urgency || urgencyLabels[level] || "Sedang",
-      time: item.time || time,
+      urgency: urgencyLabels[level] || (["Tinggi", "Sedang", "Rendah"].includes(rawUrgency) ? rawUrgency : "Sedang"),
+      time: item.time || detectionTime,
     };
   });
 }

@@ -37,9 +37,9 @@ export default function ProfileMenu({ device, position }) {
         <div id="profileMenu" className="vc-menu" role="dialog" aria-label="Profil pengguna">
           <div className="vc-menu-head">
             <img src={avatar} alt="" />
-            <div><b>{profile.nama}</b><span>{profile.sekolah}</span></div>
+            <div><b>{device.studentName || profile.nama}</b><span>{device.school || profile.sekolah}</span></div>
           </div>
-          <div className="vc-row"><span>Perangkat</span><span>{profile.perangkat}</span></div>
+          <div className="vc-row"><span>Perangkat</span><span>{device.name || profile.perangkat}</span></div>
           <div className="vc-row">
             <span>Status rompi</span>
             <span>
@@ -47,8 +47,8 @@ export default function ProfileMenu({ device, position }) {
               {device.online ? "Online" : "Offline"}
             </span>
           </div>
-          <div className="vc-row"><span>Baterai</span><span>{device.battery}%</span></div>
-          <div className="vc-row"><span>Lokasi terakhir</span><span>{position.lat.toFixed(5)}, {position.lng.toFixed(5)}</span></div>
+          <div className="vc-row"><span>Baterai</span><span>{device.battery == null ? "-" : `${device.battery}%`}</span></div>
+          <div className="vc-row"><span>Lokasi terakhir</span><span>{position ? `${position.lat.toFixed(5)}, ${position.lng.toFixed(5)}` : "Belum tersedia"}</span></div>
         </div>
       )}
     </li>

@@ -17,37 +17,39 @@ export default function GpsMap({ position, detections }) {
           <h6 className="capitalize dark:text-white">Lokasi GPS</h6>
           <p className="mb-0 text-sm leading-normal dark:text-white dark:opacity-60">
             <i className="ni ni-pin-3" style={{ color: "#660f08" }}></i>{" "}
-            <span className="font-semibold">
-              {position.lat.toFixed(5)}, {position.lng.toFixed(5)} - diperbarui {position.updated}
-            </span>
+            <span className="font-semibold">{position
+              ? `${position.lat.toFixed(5)}, ${position.lng.toFixed(5)} - diperbarui ${position.updated}`
+              : "Lokasi belum tersedia"}</span>
           </p>
         </div>
         <div className="flex-auto p-4">
-          <MapContainer center={[position.lat, position.lng]} zoom={17} style={{ height: 340, borderRadius: 12 }}>
-            <TileLayer
-              url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-              maxZoom={19}
-              attribution="&copy; OpenStreetMap"
-            />
-            {detections.filter((d) => d.lat != null).map((d, i) => (
+          {position ? (
+            <MapContainer center={[position.lat, position.lng]} zoom={17} style={{ height: 340, borderRadius: 12 }}>
+              <TileLayer
+                url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+                maxZoom={19}
+                attribution="&copy; OpenStreetMap"
+              />
+              {detections.filter((d) => d.lat != null && d.lng != null).map((d, i) => (
+                <CircleMarker
+                  key={i}
+                  center={[Number(d.lat), Number(d.lng)]}
+                  radius={7}
+                  pathOptions={{ color: "#fff", weight: 2, fillColor: COLOR[d.urgency], fillOpacity: 1 }}
+                >
+                  <Popup><b>{d.object}</b><br />{fmt(d.distance)} m, {d.urgency}<br />{d.time}</Popup>
+                </CircleMarker>
+              ))}
               <CircleMarker
-                key={i}
-                center={[d.lat, d.lng]}
-                radius={7}
-                pathOptions={{ color: "#fff", weight: 2, fillColor: COLOR[d.urgency], fillOpacity: 1 }}
+                center={[position.lat, position.lng]}
+                radius={11}
+                pathOptions={{ color: "#fff", weight: 3, fillColor: "#660f08", fillOpacity: 1 }}
               >
-                <Popup><b>{d.object}</b><br />{fmt(d.distance)} m, {d.urgency}<br />{d.time}</Popup>
+                <Popup>Posisi rompi</Popup>
               </CircleMarker>
-            ))}
-            <CircleMarker
-              center={[position.lat, position.lng]}
-              radius={11}
-              pathOptions={{ color: "#fff", weight: 3, fillColor: "#660f08", fillOpacity: 1 }}
-            >
-              <Popup>Posisi rompi</Popup>
-            </CircleMarker>
-            <PanTo position={position} />
-          </MapContainer>
+              <PanTo position={position} />
+            </MapContainer>
+          ) : <div className="flex h-[340px] items-center justify-center rounded-xl bg-slate-100 text-sm text-slate-500">Belum ada data GPS.</div>}
         </div>
       </div>
     </div>

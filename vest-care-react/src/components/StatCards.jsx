@@ -27,8 +27,8 @@ export default function StatCards({ device, detections, historyLoading, historyE
       />
       <StatCard
         title="Baterai"
-        value={`${battery}%`}
-        sub={<SubText color={bc} strong={bLabel}>kondisi baterai</SubText>}
+        value={battery == null ? "-" : `${battery}%`}
+        sub={<SubText color={battery == null ? "#7a6460" : bc} strong={battery == null ? "Belum ada data" : bLabel}>kondisi baterai</SubText>}
         gradient="from-red-600 to-orange-600"
         icon="ni-active-40"
       />
