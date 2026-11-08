@@ -165,7 +165,9 @@
     }
 
     function renderResult(body) {
-      const detections = body.deteksi || [];
+      const semua = body.deteksi || [];
+      const detections = semua.filter(item => !item.ragu);
+      const jumlahRagu = semua.length - detections.length;
       renderBoxes(detections);
       resultBox.replaceChildren();
       const heading = document.createElement("div");
@@ -180,13 +182,16 @@
       }
       if (!detections.length) {
         const item = document.createElement("p");
-        item.textContent = "Tidak ada rintangan yang terdeteksi.";
+        item.textContent = jumlahRagu
+          ? "Tidak ada objek yang cukup yakin. Deteksi samar diabaikan."
+          : "Tidak ada rintangan yang terdeteksi.";
         resultBox.append(item);
       }
       for (const detection of detections) {
         const item = document.createElement("div");
         item.className = "item";
-        item.textContent = `${detection.level} | ${detection.kelas} ${detection.arah} | ${Number(detection.jarak_m).toFixed(1)} m | confidence ${Math.round(detection.conf * 100)}%`;
+        const gerak = detection.gerak && detection.gerak !== "netral" ? ` | ${detection.gerak}` : "";
+        item.textContent = `${detection.level} | ${detection.kelas} ${detection.arah}${gerak} | ${Number(detection.jarak_m).toFixed(1)} m | confidence ${Math.round(detection.conf * 100)}%`;
         resultBox.append(item);
       }
       return detections;

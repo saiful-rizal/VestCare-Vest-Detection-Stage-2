@@ -1,11 +1,16 @@
 import argparse
 import math
+import sys
 from pathlib import Path
 
 import cv2
 from ultralytics import YOLO
 
-from fuzzysugeno import analisis_hasil
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from fuzzysugeno import PelacakGerak, analisis_hasil
 
 
 def sumber_video(value):
@@ -62,10 +67,12 @@ def gambar_box_rapat(res, conf_min):
 
 def main():
     ap = argparse.ArgumentParser(description="YOLO-seg + Fuzzy Sugeno")
-    ap.add_argument("--model", type=Path, default=Path("models") / "best.pt")
+    ap.add_argument("--model", type=Path, default=ROOT / "models" / "best.pt")
     ap.add_argument("--source", default="0", help="0 untuk webcam, atau path gambar/video")
     ap.add_argument("--conf", type=float, default=0.60,
                     help="confidence minimum YOLO sebelum diteruskan ke fuzzy")
+    ap.add_argument("--conf-ragu", type=float, default=0.50,
+                    help="confidence di bawah nilai ini ditandai ragu dan tidak diucapkan")
     ap.add_argument("--jarak", type=float, default=None,
                     help="override jarak tetap dalam meter; tanpa opsi ini memakai estimasi bounding box")
     ap.add_argument("--fov-vertikal", type=float, default=60.0,
@@ -87,7 +94,8 @@ def main():
             + ", ".join(sorted(kelas_tidak_didukung))
         )
     source = sumber_video(args.source)
-    hasil = model.predict(source=source, imgsz=416, conf=args.conf, stream=True, verbose=False)
+    hasil = model.predict(source=source, imgsz=512, conf=args.conf, stream=True, verbose=False)
+    pelacak = PelacakGerak()
 
     for res in hasil:
         analisis = analisis_hasil(
@@ -99,17 +107,22 @@ def main():
                     box, nama, res.orig_shape[0], args.fov_vertikal, args.jarak_maks))
             ),
             conf_min=args.conf,
+            conf_ragu=args.conf_ragu,
         )
+        pelacak.perbarui(analisis)
         frame = gambar_box_rapat(res, args.conf)
         if not analisis:
             cv2.putText(frame, "Tidak ada deteksi yang memenuhi confidence",
                         (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65,
                         (180, 180, 180), 2, cv2.LINE_AA)
         for i, item in enumerate(analisis):
-            teks = (f"{item['kelas']} {item['conf']:.2f} -> {item['level']} "
+            gerak = "" if item.get("gerak", "netral") == "netral" else f" {item['gerak']}"
+            ragu = " RAGU" if item.get("ragu") else ""
+            teks = (f"{item['kelas']}{gerak} {item['conf']:.2f} -> {item['level']}{ragu} "
                     f"{item['urgensi']:.1f} | {item['jarak_m']:.1f} m")
             cv2.putText(frame, teks, (10, 30 + i * 28), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.65, (0, 0, 255) if item["urgensi"] >= 75 else (0, 200, 255),
+                        0.65, (128, 128, 128) if item.get("ragu")
+                        else (0, 0, 255) if item["urgensi"] >= 75 else (0, 200, 255),
                         2, cv2.LINE_AA)
             print(item["pesan"])
         cv2.imshow("YOLO + Fuzzy Sugeno", frame)

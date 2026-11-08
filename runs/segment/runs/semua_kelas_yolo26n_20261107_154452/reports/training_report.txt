@@ -1,0 +1,37 @@
+LAPORAN TRAINING YOLO SEGMENTASI
+Model: yolo26n-seg.pt
+Epoch selesai: 100 / 100
+Gambar train: 2778
+Gambar val: 312
+
+TARGET PER KELAS: BELUM LULUS
+Ambang semua metrik: 98.00%
+Metrik wajib: box_p, box_map50, mask_p, mask_map50
+Bobot aktif diganti: tidak
+Laporan, grafik, dan log evaluasi: C:\dataset vestcare (rompi-cerdas)\runs\segment\runs\semua_kelas_yolo26n_20261107_154452\evaluation\final
+
+Kelas            Box P   Box mAP50    Mask P  Mask mAP50
+pohon           0.9846      0.9950    0.9852      0.9950
+mobil           0.8977      0.8456    0.9153      0.8449
+motor           0.9129      0.8882    0.9482      0.9182
+orang           0.8583      0.8081    0.8274      0.7628
+lubang          0.7718      0.7336    0.7777      0.7169
+
+HASIL VALIDASI SPLIT VAL
+metrics/precision(B): 0.8850734184435352
+metrics/recall(B): 0.7805736969039915
+metrics/mAP50(B): 0.8539829367863725
+metrics/mAP50-95(B): 0.6476855973686102
+metrics/precision(M): 0.8902456090770972
+metrics/recall(M): 0.7821941168477433
+metrics/mAP50(M): 0.8492560575568179
+metrics/mAP50-95(M): 0.6105370743416991
+fitness: 1.2582226717103093
+
+Kelas           Box P    Box R   Box F1   Box mAP50   Box mAP50-95   Mask P   Mask R  Mask F1  Mask mAP50  Mask mAP50-95
+pohon          0.9846   1.0000   0.9923      0.9950         0.9044   0.9851   1.0000   0.9925      0.9950         0.8758
+mobil          0.8977   0.7505   0.8175      0.8457         0.5856   0.9109   0.7602   0.8288      0.8529         0.5620
+motor          0.9129   0.7907   0.8474      0.8882         0.6386   0.9515   0.8211   0.8815      0.9214         0.5763
+orang          0.8583   0.7367   0.7928      0.8103         0.5867   0.8269   0.7046   0.7609      0.7639         0.5225
+lubang         0.7718   0.6250   0.6907      0.7307         0.5232   0.7768   0.6250   0.6927      0.7131         0.5160
+CSV detail per kelas: val_class_metrics.csv.

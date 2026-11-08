@@ -61,9 +61,10 @@ def api_key_is_configured(value: Optional[str]) -> bool:
 DEFAULT_MODEL = ROOT / "models" / "best.pt"
 DEFAULT_SUARA_FOLDER = ROOT / "suara-natural-ai" / "cache_ardi"
 DEFAULT_CONF = 0.35
-DEFAULT_IMGSZ = 416
+DEFAULT_CONF_RAGU = 0.50
+DEFAULT_IMGSZ = 512
 
-from fuzzysugeno import KELAS_ID_KE_NAMA, analisis_hasil, validasi_nama_kelas  # noqa: E402
+from fuzzysugeno import KELAS_ID_KE_NAMA, PelacakGerak, analisis_hasil, validasi_nama_kelas  # noqa: E402
 from ultralytics import YOLO  # noqa: E402
 
 
@@ -79,20 +80,33 @@ class HasilInferensi:
         return len(self.deteksi)
 
     @property
+    def deteksi_yakin(self) -> list[dict[str, Any]]:
+        return [item for item in self.deteksi if not item.get("ragu")]
+
+    @property
+    def jumlah_ragu(self) -> int:
+        return len(self.deteksi) - len(self.deteksi_yakin)
+
+    @property
     def level_tertinggi(self) -> str:
-        return self.deteksi[0]["level"] if self.deteksi else "AMAN"
+        yakin = self.deteksi_yakin
+        return yakin[0]["level"] if yakin else "AMAN"
 
     @property
     def urgensi_tertinggi(self) -> float:
-        return float(self.deteksi[0]["urgensi"]) if self.deteksi else 0.0
+        yakin = self.deteksi_yakin
+        return float(yakin[0]["urgensi"]) if yakin else 0.0
 
 
 class InferensiVest:
-    def __init__(self, model_path: Path, conf: float, imgsz: int) -> None:
+    def __init__(self, model_path: Path, conf: float, imgsz: int,
+                 conf_ragu: float = DEFAULT_CONF_RAGU) -> None:
         if not model_path.is_file():
             raise FileNotFoundError(f"Bobot model tidak ditemukan: {model_path}")
         self.conf = conf
+        self.conf_ragu = conf_ragu
         self.imgsz = imgsz
+        self.pelacak = PelacakGerak()
         self.model = YOLO(str(model_path))
         validasi_nama_kelas(self.model.names)
 
@@ -105,7 +119,13 @@ class InferensiVest:
             conf=conf,
             verbose=False,
         )[0]
-        deteksi = analisis_hasil(hasil_model, conf_min=conf, jarak_us=jarak_us)
+        deteksi = analisis_hasil(
+            hasil_model,
+            conf_min=conf,
+            jarak_us=jarak_us,
+            conf_ragu=self.conf_ragu,
+        )
+        self.pelacak.perbarui(deteksi)
         deteksi.sort(key=lambda item: -item["urgensi"])
         return HasilInferensi(
             waktu=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -117,6 +137,8 @@ class InferensiVest:
         return {
             "waktu": hasil.waktu,
             "jumlah_objek": hasil.jumlah_objek,
+            "jumlah_objek_yakin": len(hasil.deteksi_yakin),
+            "jumlah_ragu": hasil.jumlah_ragu,
             "level_tertinggi": hasil.level_tertinggi,
             "urgensi_tertinggi": round(hasil.urgensi_tertinggi, 1),
             "aksi_suara": hasil.aksi_suara,
@@ -220,17 +242,22 @@ class PerencanaSuara:
         return "pelan"
 
     def susun(self, detections: list[dict]) -> Optional[dict]:
-        active = [item for item in detections if str(item.get("level", "")).upper() != "AMAN"]
+        if not detections:
+            safe = self._segmen("jalur_aman")
+            return {
+                "level": "AMAN",
+                "teks": safe["teks"],
+                "aksi": "lurus",
+                "segmen": [safe],
+            } if safe else None
+
+        yakin = [item for item in detections if not item.get("ragu")]
+        if not yakin:
+            return None
+
+        active = [item for item in yakin if str(item.get("level", "")).upper() != "AMAN"]
         if not active:
-            if not detections:
-                safe = self._segmen("jalur_aman")
-                return {
-                    "level": "AMAN",
-                    "teks": safe["teks"],
-                    "aksi": "lurus",
-                    "segmen": [safe],
-                } if safe else None
-            active = detections
+            active = yakin
         top = max(
             active,
             key=lambda item: (
@@ -243,10 +270,16 @@ class PerencanaSuara:
             class_name = "umum"
         direction = top.get("arah", "depan")
         level_name = str(top.get("level", "")).lower()
+        gerak = str(top.get("gerak") or "netral")
+        if gerak not in ("bergerak", "diam"):
+            gerak = "netral"
         keys = []
         if level_name in ("waspada", "bahaya"):
             keys.append(f"awal_{level_name}")
-        keys.append(f"benda_{class_name}_{direction}_netral")
+        benda_key = f"benda_{class_name}_{direction}_{gerak}"
+        if benda_key not in self._pesan_siap:
+            benda_key = f"benda_{class_name}_{direction}_netral"
+        keys.append(benda_key)
         if top.get("jarak_m") is not None:
             distance_bucket = min(50, max(5, int(float(top["jarak_m"]) * 2 + 0.5) * 5))
             if float(top["jarak_m"]) < 0.75:
@@ -261,6 +294,7 @@ class PerencanaSuara:
             "level": level_name.upper(),
             "teks": " ".join(part["teks"] for part in segments if part["teks"]),
             "aksi": action,
+            "gerak": gerak,
             "segmen": segments,
         }
 
@@ -295,6 +329,7 @@ if not MODEL_PATH.is_file():
 SUARA_FOLDER = _project_path(os.environ.get("VEST_SUARA_FOLDER", DEFAULT_SUARA_FOLDER))
 IMGSZ = int(os.environ.get("VEST_IMGSZ", DEFAULT_IMGSZ))
 CONF = float(os.environ.get("VEST_CONF", DEFAULT_CONF))
+CONF_RAGU = float(os.environ.get("VEST_CONF_RAGU", DEFAULT_CONF_RAGU))
 RIWAYAT_PATH = _project_path(os.environ.get("VEST_RIWAYAT_PATH", ROOT / "data" / "riwayat.jsonl"))
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 HOST = os.environ.get("VEST_HOST", "127.0.0.1")
@@ -327,6 +362,7 @@ try:
         model_path=MODEL_PATH,
         conf=CONF,
         imgsz=IMGSZ,
+        conf_ragu=CONF_RAGU,
     )
     print(f"[API] Engine inferensi siap. Model: {MODEL_PATH}")
 except Exception as e:  # server tetap bisa start & /docs bisa dibuka buat debug
@@ -502,6 +538,7 @@ def info():
         "model_exists": MODEL_PATH.exists(),
         "imgsz": IMGSZ,
         "conf": CONF,
+        "conf_ragu": CONF_RAGU,
         "suara_browser": "klip Ardi (suara-natural-ai)",
         "pustaka_suara_siap": PERENCANA_SUARA is not None,
         "autentikasi": "aktif" if API_KEY_CONFIGURED else "belum dikonfigurasi",

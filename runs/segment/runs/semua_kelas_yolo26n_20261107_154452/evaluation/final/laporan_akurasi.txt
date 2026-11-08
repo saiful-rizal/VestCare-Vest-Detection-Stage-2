@@ -1,0 +1,26 @@
+RINGKASAN AKURASI
+Model: C:\dataset vestcare (rompi-cerdas)\runs\segment\runs\semua_kelas_yolo26n_20261107_154452\weights\best.pt | Split: val | gambar: 312
+
+             P       R      F1   mAP50  mAP50-95
+MASK    0.8908  0.7822  0.8330  0.8476    0.6118
+KOTAK   0.8851  0.7806  0.8295  0.8541    0.6477
+
+METRIK DETEKSI PER KELAS (P | R | F1 | mAP50 | mAP50-95)
+pohon        mask: 0.9852 | 1.0000 | 0.9926 | 0.9950 | 0.8780 | box: 0.9846 | 1.0000 | 0.9923 | 0.9950 | 0.9044
+mobil        mask: 0.9153 | 0.7637 | 0.8327 | 0.8449 | 0.5416 | box: 0.8977 | 0.7505 | 0.8175 | 0.8456 | 0.5857
+motor        mask: 0.9482 | 0.8179 | 0.8782 | 0.9182 | 0.5801 | box: 0.9129 | 0.7907 | 0.8474 | 0.8882 | 0.6385
+orang        mask: 0.8274 | 0.7046 | 0.7611 | 0.7628 | 0.5309 | box: 0.8583 | 0.7367 | 0.7928 | 0.8081 | 0.5864
+lubang       mask: 0.7777 | 0.6250 | 0.6930 | 0.7169 | 0.5283 | box: 0.7718 | 0.6250 | 0.6907 | 0.7336 | 0.5236
+
+Akurasi tingkat-gambar (conf>=0.25): 0.8045 (251/312 benar)
+P 0.9220 R 0.9098 F1-mikro 0.9159 F1-makro 0.9143
+
+AKURASI TINGKAT-GAMBAR PER KELAS (TP | FP | FN | TN | akurasi | F1)
+pohon           74 |     0 |     2 |   236 | 0.9936 | 0.9867
+mobil           86 |    10 |     1 |   215 | 0.9647 | 0.9399
+motor           60 |     4 |     1 |   247 | 0.9840 | 0.9600
+orang           71 |     0 |    22 |   219 | 0.9295 | 0.8659
+lubang          52 |    15 |     8 |   237 | 0.9263 | 0.8189
+
+Kecepatan: 17.21 ms/gambar (~58.1 FPS)
+Log lengkap: C:\dataset vestcare (rompi-cerdas)\runs\segment\runs\semua_kelas_yolo26n_20261107_154452\evaluation\final\evaluation_20261108_000253.log

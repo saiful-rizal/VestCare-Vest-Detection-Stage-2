@@ -1,0 +1,28 @@
+{
+  "raw_dir": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\raw",
+  "reports_dir": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\reports",
+  "training_metrics_csv": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\results.csv",
+  "raw_training_metrics_csv": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\raw\\results.csv",
+  "training_log": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\training.log",
+  "raw_training_log": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\raw\\training.log",
+  "epoch_metrics_plot": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\results.png",
+  "validation_plots_dir": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\evaluation\\val",
+  "detailed_evaluation_dir": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\evaluation\\final",
+  "best_checkpoint": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\weights\\best.pt",
+  "training_plots": [
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\BoxF1_curve.png",
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\BoxPR_curve.png",
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\BoxP_curve.png",
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\BoxR_curve.png",
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\MaskF1_curve.png",
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\MaskPR_curve.png",
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\MaskP_curve.png",
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\MaskR_curve.png",
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\confusion_matrix.png",
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\confusion_matrix_normalized.png",
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\results.png"
+  ],
+  "validation_reports": [
+    "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\reports\\val_class_metrics.csv"
+  ]
+}

@@ -5,6 +5,7 @@ import logging
 import math
 import random
 import sys
+import subprocess
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -37,14 +38,16 @@ VAL_FRACTION = 0.10
 
 # ==================== KONFIGURASI PELATIHAN ====================
 EPOCHS = 100
-IMGSZ = 416
-BATCH = 8
+IMGSZ = 512
+BATCH = 4
 WORKERS = 0            # Windows: 0 untuk menghindari error multiprocessing
 DEVICE = "0"
 PROJECT = "runs"
-EXIST_OK = True
+EXIST_OK = False
 
 PATIENCE = 50
+MIN_METRIK_PER_KELAS = 0.98
+METRIK_TARGET = ("box_p", "box_map50", "mask_p", "mask_map50")
 SEED_LATIH = 0
 DETERMINISTIC = True
 CACHE = False
@@ -389,6 +392,7 @@ def simpan_laporan(run_dir, report):
         "raw_training_log": str(raw_dir / "training.log"),
         "epoch_metrics_plot": str(run_dir / "results.png"),
         "validation_plots_dir": str(run_dir / "evaluation" / "val"),
+        "detailed_evaluation_dir": report.get("detailed_evaluation_dir"),
         "best_checkpoint": report.get("checkpoint_best"),
     }
 
@@ -406,6 +410,33 @@ def simpan_laporan(run_dir, report):
     ]
     if report["dataset"]["train_val_image_overlap_count"]:
         lines.append("PERINGATAN: sumber train dan val memiliki gambar yang sama.")
+    target = report.get("quality_gate")
+    if target:
+        lines.extend([
+            "",
+            f"TARGET PER KELAS: {'LULUS' if target['passed'] else 'BELUM LULUS'}",
+            f"Ambang semua metrik: {target['threshold']:.2%}",
+            f"Metrik wajib: {', '.join(target['metrics'])}",
+            f"Bobot aktif diganti: {'ya' if target.get('deployed') else 'tidak'}",
+            f"Laporan, grafik, dan log evaluasi: {target['report_dir']}",
+        ])
+        lines.extend([
+            "",
+            f"{'Kelas':<12}{'Box P':>10}{'Box mAP50':>12}"
+            f"{'Mask P':>10}{'Mask mAP50':>12}",
+        ])
+
+        def format_target_metric(value):
+            return f"{value:.4f}" if value is not None else "n/a"
+
+        for class_name, metrics in target["per_class"].items():
+            lines.append(
+                f"{class_name:<12}"
+                f"{format_target_metric(metrics['box_p']):>10}"
+                f"{format_target_metric(metrics['box_map50']):>12}"
+                f"{format_target_metric(metrics['mask_p']):>10}"
+                f"{format_target_metric(metrics['mask_map50']):>12}"
+            )
     for split, result in report["validation"].items():
         lines.extend(["", f"HASIL VALIDASI SPLIT {split.upper()}"])
         lines.extend(f"{key}: {value}" for key, value in result["overall"].items())
@@ -464,7 +495,145 @@ def simpan_laporan(run_dir, report):
     )
 
 
-def latih(data_yaml):
+def periksa_target(rows, report_dir):
+    metrics_by_class = {
+        row["kelas"]: {
+            metric: angka_json(row.get(metric))
+            for metric in METRIK_TARGET
+        }
+        for row in rows
+    }
+    if (
+        len(metrics_by_class) != len(rows)
+        or set(metrics_by_class) != set(EXPECTED_CLASSES.values())
+    ):
+        raise ValueError(
+            f"Hasil evaluasi tidak mencakup semua kelas: {sorted(metrics_by_class)}"
+        )
+
+    failures = [
+        {
+            "kelas": class_name,
+            "metrik": metric,
+            "nilai": value,
+            "ambang": MIN_METRIK_PER_KELAS,
+        }
+        for class_name, metrics in metrics_by_class.items()
+        for metric, value in metrics.items()
+        if value is None or value < MIN_METRIK_PER_KELAS
+    ]
+    passed = not failures
+    print(
+        f"\n[TARGET] {'LULUS' if passed else 'BELUM LULUS'}: "
+        f"{len(METRIK_TARGET)} metrik x {len(metrics_by_class)} kelas "
+        f"harus >= {MIN_METRIK_PER_KELAS:.0%}."
+    )
+    if failures:
+        for failure in failures:
+            value = failure["nilai"]
+            shown = "n/a" if value is None else f"{value:.2%}"
+            print(
+                f"[TARGET] {failure['kelas']} {failure['metrik']}: "
+                f"{shown} (target {MIN_METRIK_PER_KELAS:.0%})"
+            )
+    return {
+        "passed": passed,
+        "threshold": MIN_METRIK_PER_KELAS,
+        "metrics": list(METRIK_TARGET),
+        "per_class": metrics_by_class,
+        "failures": failures,
+        "report_dir": str(report_dir),
+    }
+
+
+def evaluasi_laporan(best, data_yaml, run_dir):
+    """Jalankan evaluasi lengkap dengan laporan kelas, grafik, dan log."""
+    output_dir = Path(run_dir) / "evaluation" / "final"
+    command = [
+        sys.executable,
+        str(ROOT / "start_eval.py"),
+        "--dataset", str(data_yaml),
+        "--split", "val",
+        "--model", str(best),
+        "--out", str(output_dir),
+        "--imgsz", str(IMGSZ),
+        "--batch", "1",
+        "--device", DEVICE,
+    ]
+    process = subprocess.Popen(
+        command,
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if process.stdout is None:
+        raise RuntimeError("Tidak dapat membaca keluaran proses evaluasi.")
+    for line in process.stdout:
+        print(line, end="")
+    return_code = process.wait()
+    if return_code:
+        raise subprocess.CalledProcessError(return_code, command)
+
+    required_outputs = (
+        output_dir / "per_kelas.csv",
+        output_dir / "ringkasan_test.json",
+        output_dir / "laporan_akurasi.txt",
+        output_dir / "grafik" / "1_ringkasan_total.png",
+        output_dir / "grafik" / "2_per_kelas.png",
+    )
+    missing = [str(path) for path in required_outputs if not path.is_file()]
+    if not list(output_dir.glob("evaluation_*.log")):
+        missing.append(str(output_dir / "evaluation_*.log"))
+    if missing:
+        raise FileNotFoundError(
+            "Laporan evaluasi belum lengkap: " + ", ".join(missing)
+        )
+
+    with (output_dir / "per_kelas.csv").open(
+        encoding="utf-8-sig", newline=""
+    ) as file:
+        rows = list(csv.DictReader(file))
+    return periksa_target(rows, output_dir)
+
+
+def pasang_model(best):
+    """Ganti bobot layanan secara atomik setelah seluruh target validasi lulus."""
+    serving_model = MODELS_DIR / "best.pt"
+    temporary_model = MODELS_DIR / f".best-{datetime.now():%Y%m%d%H%M%S%f}.tmp"
+    try:
+        shutil.copy2(best, temporary_model)
+        temporary_model.replace(serving_model)
+    finally:
+        temporary_model.unlink(missing_ok=True)
+    print(f"[INFO] Bobot lolos target dipasang: {serving_model}")
+    return serving_model
+
+
+def bersihkan_hasil_lama(run_dir, log_path):
+    """Hapus hanya artefak training/evaluasi VestCare yang sudah digantikan."""
+    run_dir = Path(run_dir).resolve()
+    old_run = (ROOT / "runs" / "segment" / "runs" / "semua_kelas_yolo26n").resolve()
+    expected_parent = (ROOT / "runs" / "segment" / "runs").resolve()
+    if old_run != run_dir and old_run.parent == expected_parent and old_run.is_dir():
+        shutil.rmtree(old_run)
+        print(f"[INFO] Hasil training/evaluasi lama dihapus: {old_run}")
+
+    duplicate_model = MODELS_DIR / "best_semua_kelas.pt"
+    if duplicate_model.is_file():
+        duplicate_model.unlink()
+        print(f"[INFO] Checkpoint duplikat dihapus: {duplicate_model}")
+
+    current_log = Path(log_path).resolve()
+    for old_log in ROOT.glob("training_semua_*.log"):
+        if old_log.resolve() != current_log and old_log.is_file():
+            old_log.unlink()
+            print(f"[INFO] Log training lama dihapus: {old_log}")
+
+
+def latih(data_yaml, run_name):
     if not torch.cuda.is_available():
         raise RuntimeError(
             "Training ini dikonfigurasi untuk GPU, tetapi CUDA tidak tersedia pada "
@@ -478,6 +647,7 @@ def latih(data_yaml):
     print(f"[INFO] model          : {MODEL}")
     print(f"[INFO] device         : {DEVICE}")
     print(f"[INFO] GPU            : {torch.cuda.get_device_name(int(DEVICE))}")
+    print(f"[INFO] Resolusi       : {IMGSZ}px | batch: {BATCH} | epoch maks: {EPOCHS}")
     print("=" * 60 + "\n")
 
     model = YOLO(MODEL)
@@ -490,7 +660,7 @@ def latih(data_yaml):
         workers=WORKERS,
         device=DEVICE,
         project=PROJECT,
-        name="semua_kelas_yolo26n",
+        name=run_name,
         task="segment",
         exist_ok=EXIST_OK,
         verbose=True,
@@ -525,18 +695,16 @@ def latih(data_yaml):
     )
 
     best = Path(model.trainer.save_dir) / "weights" / "best.pt"
-    if best.exists():
-        for tujuan in (MODELS_DIR / "best.pt", MODELS_DIR / "best_semua_kelas.pt"):
-            shutil.copy2(best, tujuan)
-            print(f"[INFO] best.pt disimpan: {tujuan}")
-    else:
+    if not best.is_file():
         raise FileNotFoundError(f"best.pt tidak ditemukan setelah training: {best}")
     return Path(model.trainer.save_dir).resolve(), best.resolve()
 
 
 def main():
     log_path = ROOT / f"training_semua_{datetime.now():%Y%m%d_%H%M%S_%f}.log"
+    run_name = f"semua_kelas_yolo26n_{datetime.now():%Y%m%d_%H%M%S}"
     run_dir = None
+    exit_code = 0
     try:
         with capture_console(log_path):
             data_yaml = buat_data_gabungan()
@@ -553,7 +721,7 @@ def main():
                     f"{dataset['train_val_image_overlap_count']} gambar."
                 )
 
-            run_dir, best = latih(data_yaml)
+            run_dir, best = latih(data_yaml, run_name)
             results_csv = run_dir / "results.csv"
             with results_csv.open(encoding="utf-8-sig", newline="") as file:
                 history = list(csv.DictReader(file))
@@ -610,7 +778,27 @@ def main():
                     .read_text(encoding="utf-8")
                 )
 
+            report["quality_gate"] = evaluasi_laporan(best, data_yaml, run_dir)
+            report["detailed_evaluation_dir"] = report["quality_gate"]["report_dir"]
+            report["quality_gate"]["deployed"] = False
+            if report["quality_gate"]["passed"]:
+                pasang_model(best)
+                report["quality_gate"]["deployed"] = True
+                report["quality_gate"]["serving_model"] = str(MODELS_DIR / "best.pt")
+                print(
+                    "[INFO] Restart server_rest_api.py agar server memuat bobot baru."
+                )
+            else:
+                exit_code = 2
+                report["quality_gate"]["serving_model"] = str(MODELS_DIR / "best.pt")
+                print(
+                    "[PERINGATAN] Target 98% belum tercapai. Model layanan lama "
+                    "dipertahankan; periksa laporan per kelas dan anotasi yang salah."
+                )
+            simpan_laporan(run_dir, report)
+            bersihkan_hasil_lama(run_dir, log_path)
             print(f"\n[INFO] Laporan lengkap: {run_dir / 'reports'}")
+            print(f"[INFO] Laporan evaluasi, grafik, dan log: {run_dir / 'evaluation' / 'final'}")
             print(f"[INFO] Log mentah: {log_path}")
             print(f"[INFO] Bobot akhir ada di: {MODELS_DIR}")
     finally:
@@ -629,7 +817,8 @@ def main():
                     json.dumps(artifacts, ensure_ascii=False, indent=2) + "\n",
                     encoding="utf-8",
                 )
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

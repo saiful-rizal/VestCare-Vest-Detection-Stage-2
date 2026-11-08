@@ -16,7 +16,7 @@ def main():
     os.chdir(ROOT)
     from train_semua import main as train_all_classes
 
-    train_all_classes()
+    return train_all_classes()
 
 
 if __name__ == "__main__":

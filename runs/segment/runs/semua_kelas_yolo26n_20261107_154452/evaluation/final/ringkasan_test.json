@@ -1,0 +1,249 @@
+{
+  "model": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\weights\\best.pt",
+  "dataset": "C:\\dataset vestcare (rompi-cerdas)\\dataset_gabungan.yaml",
+  "split": "val",
+  "kelas": {
+    "0": "pohon",
+    "1": "mobil",
+    "2": "motor",
+    "3": "orang",
+    "4": "lubang"
+  },
+  "total": {
+    "mask_p": 0.8907641021745532,
+    "mask_r": 0.7822356736376641,
+    "mask_f1": 0.8329797380618063,
+    "mask_map50": 0.8475512387723771,
+    "mask_map5095": 0.6117560521272606,
+    "box_p": 0.8850735547755999,
+    "box_r": 0.7805736991191967,
+    "box_f1": 0.8295455559732847,
+    "box_map50": 0.8541196336724688,
+    "box_map5095": 0.6477190263615329,
+    "speed_ms_ultralytics": {
+      "preprocess": 0.5110580129836214,
+      "inference": 13.43101250019502,
+      "loss": 0.005234615085870386,
+      "postprocess": 1.8504557697153172
+    }
+  },
+  "per_kelas": [
+    {
+      "kelas": "pohon",
+      "mask_p": 0.9852311366998912,
+      "mask_r": 1.0,
+      "mask_f1": 0.9925606328517195,
+      "mask_map50": 0.995,
+      "mask_map5095": 0.8779504155763667,
+      "box_p": 0.9846308092896334,
+      "box_r": 1.0,
+      "box_f1": 0.9922558943263268,
+      "box_map50": 0.995,
+      "box_map5095": 0.9044289681099335,
+      "n_gambar": 76,
+      "n_instance": 76
+    },
+    {
+      "kelas": "mobil",
+      "mask_p": 0.9153411133010018,
+      "mask_r": 0.7636846234338663,
+      "mask_f1": 0.8326637503296287,
+      "mask_map50": 0.8448957447049819,
+      "mask_map5095": 0.5415880875912391,
+      "box_p": 0.8977227397813299,
+      "box_r": 0.7504810223014423,
+      "box_f1": 0.8175249868899522,
+      "box_map50": 0.8456219367043477,
+      "box_map5095": 0.5856976576013708,
+      "n_gambar": 87,
+      "n_instance": 269
+    },
+    {
+      "kelas": "motor",
+      "mask_p": 0.9481858585069705,
+      "mask_r": 0.8178674102348811,
+      "mask_f1": 0.8782184843958845,
+      "mask_map50": 0.9181640452954154,
+      "mask_map5095": 0.5801310784415681,
+      "box_p": 0.9129262729881418,
+      "box_r": 0.7907326690240791,
+      "box_f1": 0.8474473507115136,
+      "box_map50": 0.8882323616367929,
+      "box_map5095": 0.6385073092584529,
+      "n_gambar": 61,
+      "n_instance": 358
+    },
+    {
+      "kelas": "orang",
+      "mask_p": 0.8273520603209127,
+      "mask_r": 0.7046263345195729,
+      "mask_f1": 0.7610734610677617,
+      "mask_map50": 0.762822789011519,
+      "mask_map5095": 0.5308559823536135,
+      "box_p": 0.8582778957590607,
+      "box_r": 0.7366548042704626,
+      "box_f1": 0.792829108461256,
+      "box_map50": 0.8081254651312417,
+      "box_map5095": 0.5864025487005654,
+      "n_gambar": 93,
+      "n_instance": 281
+    },
+    {
+      "kelas": "lubang",
+      "mask_p": 0.7777103420439897,
+      "mask_r": 0.625,
+      "mask_f1": 0.6930425323152714,
+      "mask_map50": 0.7168736148499693,
+      "mask_map5095": 0.5282546966735155,
+      "box_p": 0.7718100560598334,
+      "box_r": 0.625,
+      "box_f1": 0.6906898800515691,
+      "box_map50": 0.7336184048899628,
+      "box_map5095": 0.5235586481373415,
+      "n_gambar": 60,
+      "n_instance": 88
+    }
+  ],
+  "per_varian": [
+    {
+      "varian": "gerak_diagonal",
+      "n_gambar": 78,
+      "mask_p": 0.9091625833132303,
+      "mask_r": 0.7849659385441897,
+      "mask_f1": 0.8425118298785038,
+      "mask_map50": 0.855841554407549,
+      "mask_map5095": 0.6132324436386319,
+      "box_p": 0.8966816891334484,
+      "box_r": 0.7746298954643989,
+      "box_f1": 0.8311992204438866,
+      "box_map50": 0.8480654145030913,
+      "box_map5095": 0.6320215886572605,
+      "catatan": ""
+    },
+    {
+      "varian": "gerak_horizontal",
+      "n_gambar": 81,
+      "mask_p": 0.8943066291988245,
+      "mask_r": 0.7642261974842453,
+      "mask_f1": 0.8241652424624237,
+      "mask_map50": 0.8464992465298247,
+      "mask_map5095": 0.6096873432515458,
+      "box_p": 0.9046264417931491,
+      "box_r": 0.7707342619817347,
+      "box_f1": 0.8323301261795514,
+      "box_map50": 0.8565610074649367,
+      "box_map5095": 0.6513619799254852,
+      "catatan": ""
+    },
+    {
+      "varian": "gerak_vertikal",
+      "n_gambar": 76,
+      "mask_p": 0.9083798707621898,
+      "mask_r": 0.7862505776561267,
+      "mask_f1": 0.842914393264421,
+      "mask_map50": 0.8435428702118495,
+      "mask_map5095": 0.6108799135994181,
+      "box_p": 0.8787031795497935,
+      "box_r": 0.7910610948086031,
+      "box_f1": 0.8325820714945574,
+      "box_map50": 0.8536414790494659,
+      "box_map5095": 0.6532478048566499,
+      "catatan": ""
+    },
+    {
+      "varian": "getar",
+      "n_gambar": 77,
+      "mask_p": 0.917156873293778,
+      "mask_r": 0.7412998342817504,
+      "mask_f1": 0.819904716327463,
+      "mask_map50": 0.8467658613240893,
+      "mask_map5095": 0.6233318792637923,
+      "box_p": 0.9074130807939064,
+      "box_r": 0.7463094221783272,
+      "box_f1": 0.8190139890909214,
+      "box_map50": 0.8615948038000649,
+      "box_map5095": 0.6624875384523717,
+      "catatan": ""
+    }
+  ],
+  "kesalahan": {
+    "gambar_test": 312,
+    "salah_tingkat_gambar": 61,
+    "akurasi_tingkat_gambar": 0.8045,
+    "presisi_mikro_gambar": 0.922,
+    "recall_mikro_gambar": 0.9098,
+    "f1_mikro_gambar": 0.9159,
+    "f1_makro_gambar": 0.9143,
+    "salah_per_varian": {
+      "gerak_diagonal": 15,
+      "gerak_horizontal": 20,
+      "gerak_vertikal": 11,
+      "getar": 15
+    },
+    "per_kelas": [
+      {
+        "kelas": "pohon",
+        "TP": 74,
+        "FP": 0,
+        "FN": 2,
+        "TN": 236,
+        "akurasi_gambar": 0.9935897435897436,
+        "presisi_gambar": 1.0,
+        "recall_gambar": 0.9736842105263158,
+        "f1_gambar": 0.9866666666666666
+      },
+      {
+        "kelas": "mobil",
+        "TP": 86,
+        "FP": 10,
+        "FN": 1,
+        "TN": 215,
+        "akurasi_gambar": 0.9647435897435898,
+        "presisi_gambar": 0.8958333333333334,
+        "recall_gambar": 0.9885057471264368,
+        "f1_gambar": 0.9398907103825137
+      },
+      {
+        "kelas": "motor",
+        "TP": 60,
+        "FP": 4,
+        "FN": 1,
+        "TN": 247,
+        "akurasi_gambar": 0.9839743589743589,
+        "presisi_gambar": 0.9375,
+        "recall_gambar": 0.9836065573770492,
+        "f1_gambar": 0.96
+      },
+      {
+        "kelas": "orang",
+        "TP": 71,
+        "FP": 0,
+        "FN": 22,
+        "TN": 219,
+        "akurasi_gambar": 0.9294871794871795,
+        "presisi_gambar": 1.0,
+        "recall_gambar": 0.7634408602150538,
+        "f1_gambar": 0.8658536585365854
+      },
+      {
+        "kelas": "lubang",
+        "TP": 52,
+        "FP": 15,
+        "FN": 8,
+        "TN": 237,
+        "akurasi_gambar": 0.9262820512820513,
+        "presisi_gambar": 0.7761194029850746,
+        "recall_gambar": 0.8666666666666667,
+        "f1_gambar": 0.8188976377952756
+      }
+    ]
+  },
+  "kecepatan": {
+    "n_gambar": 100,
+    "ms_rata2": 17.21,
+    "ms_median": 17.31,
+    "ms_maks": 29.01,
+    "fps_rata2": 58.1,
+    "catatan": "diukur pada perangkat ini (batch 1, termasuk pra/pasca-proses)"
+  }
+}

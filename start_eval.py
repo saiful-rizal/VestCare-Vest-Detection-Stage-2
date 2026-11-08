@@ -550,7 +550,7 @@ def main():
         type=Path,
         default=ROOT / "hasil_08",
     )
-    parser.add_argument("--imgsz", type=int, default=416)
+    parser.add_argument("--imgsz", type=int, default=512)
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--conf", type=float, default=0.25)
     parser.add_argument("--contoh", type=int, default=20, help="maksimum contoh per folder salah/benar")

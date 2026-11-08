@@ -53,6 +53,10 @@ JARAK_TAK_DIKETAHUI_M = 2.0
 SETENGAH_KORIDOR_M = 0.45
 CONF_MIN_KELAS = {"lubang": 0.80}
 
+CONF_RAGU_DEFAULT = 0.50
+
+KELAS_GERAK = ("mobil", "motor", "orang")
+
 
 def validasi_nama_kelas(
     nama_kelas: Mapping[int, str] | list[str] | tuple[str, ...],
@@ -306,7 +310,7 @@ def _entri(
 
     return {"kelas": kelas, "jarak_m": round(jarak, 2), "bahaya": bahaya, "jalur": round(jalur, 2),
         "conf": round(conf, 2), "urgensi": round(u, 1), "level": lv, "arah": pos,
-        "sumber": sumber, "getar": GETAR[lv],
+        "sumber": sumber, "getar": GETAR[lv], "gerak": "netral", "ragu": False,
         "pesan": f"{lv}: {kelas} {pos}, sekitar {jarak:.1f} meter"}
 
 
@@ -332,7 +336,7 @@ class IngatanHalangan:
 
         for d in daftar:
             if (d["kelas"] in KELAS_TAHAN and d["level"] != "AMAN" and d["sumber"] != "ingatan"
-                    and d["jarak_m"] <= self.jarak_picu):
+                    and not d.get("ragu") and d["jarak_m"] <= self.jarak_picu):
                 self._simpan[(d["kelas"], d["arah"])] = (kini, d)
 
         tambahan: list[dict[str, Any]] = []
@@ -355,12 +359,78 @@ class IngatanHalangan:
         return daftar + tambahan
 
 
+class PelacakGerak:
+    """Menaksir gerak objek dari perubahan jarak antar frame.
+
+    Tanpa sensor kecepatan pengguna, objek disebut "bergerak" bila mendekat
+    lebih cepat dari kecepatan jalan, dan "diam" bila jaraknya relatif stabil.
+    """
+
+    def __init__(
+        self,
+        kelas: Sequence[str] = KELAS_GERAK,
+        ambang_cepat_ms: float = 1.8,
+        ambang_diam_ms: float = 0.4,
+        min_sampel: int = 3,
+        umur_maks: float = 1.5,
+        waktu_fn: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.kelas = tuple(kelas)
+        self.ambang_cepat = float(ambang_cepat_ms)
+        self.ambang_diam = float(ambang_diam_ms)
+        self.min_sampel = max(1, int(min_sampel))
+        self.umur_maks = float(umur_maks)
+        self._waktu = waktu_fn
+        self._s: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def perbarui(self, daftar: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        kini = self._waktu()
+        terlihat: set[tuple[str, str]] = set()
+
+        for d in daftar:
+            d.setdefault("gerak", "netral")
+
+            kelas, arah, j = d.get("kelas"), d.get("arah"), d.get("jarak_m")
+            if kelas not in self.kelas or j is None or d.get("sumber") == "ingatan" or d.get("ragu"):
+                continue
+
+            kunci = (str(kelas), str(arah))
+            terlihat.add(kunci)
+
+            st = self._s.get(kunci)
+            if st is None or kini - st["t"] > self.umur_maks:
+                self._s[kunci] = {"t": kini, "j": float(j), "v": None, "gerak": 0, "diam": 0}
+                continue
+
+            dt = kini - st["t"]
+            if dt < 0.05:
+                continue
+
+            v = (st["j"] - float(j)) / dt
+            st["v"] = v if st["v"] is None else 0.5 * st["v"] + 0.5 * v
+            st["t"], st["j"] = kini, float(j)
+
+            st["gerak"] = st["gerak"] + 1 if st["v"] >= self.ambang_cepat else 0
+            st["diam"] = st["diam"] + 1 if abs(st["v"]) <= self.ambang_diam else 0
+
+            if st["gerak"] >= self.min_sampel:
+                d["gerak"] = "bergerak"
+            elif st["diam"] >= 2 * self.min_sampel:
+                d["gerak"] = "diam"
+
+        for kunci in [k for k, st in self._s.items() if k not in terlihat and kini - st["t"] > self.umur_maks]:
+            del self._s[kunci]
+
+        return daftar
+
+
 def analisis_hasil(
     res: Any,
     jarak_fn: Optional[Callable[[Sequence[float], str], Optional[float]]] = None,
     conf_min: float = 0.35,
     jarak_us: Optional[float] = None,
     ingatan: Optional[IngatanHalangan] = None,
+    conf_ragu: float = CONF_RAGU_DEFAULT,
 ) -> list[dict[str, Any]]:
     h, w = res.orig_shape
     nama_kelas = validasi_nama_kelas(res.names)
@@ -407,6 +477,7 @@ def analisis_hasil(
             jalur = keterhalangan(poly, w, h, koridor=koridor_untuk_jarak(jarak))
 
             entri = _entri(nama, jarak, bahaya, jalur, conf, pos, sumber)
+            entri["ragu"] = conf < conf_ragu
             entri["bbox"] = bbox
             out.append(entri)
 
