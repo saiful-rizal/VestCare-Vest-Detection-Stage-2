@@ -1,4 +1,6 @@
-# VestCare - Rompi Cerdas (Stage 2)
+<p align="center">
+  <img src="assets/vestcare-title.svg" alt="VestCare - Rompi Cerdas (Stage 2)" width="900">
+</p>
 
 Sistem peringatan rintangan untuk rompi cerdas berbasis segmentasi YOLO26n, logika fuzzy Sugeno, dan suara natural Bahasa Indonesia. Model mendeteksi lima kelas, yaitu pohon, mobil, motor, orang, dan lubang. Hasil deteksi dipetakan menjadi arah, jarak, tingkat risiko, instruksi suara, serta riwayat perangkat pada Supabase.
 
