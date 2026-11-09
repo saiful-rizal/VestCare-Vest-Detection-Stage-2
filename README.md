@@ -65,6 +65,98 @@ runs/segment/runs/semua_kelas_yolo26n_20261107_154452/
 | Status quality gate | Belum lulus | Ambang 98% per kelas belum terpenuhi |
 | Bobot aktif | Tidak diganti otomatis | `models/best.pt` dipertahankan |
 
+### Nilai mentah metrik validasi
+
+Nilai berikut diambil tanpa pembulatan dari `reports/training_report.json` bagian `validation.val.overall`.
+
+| Metrik | Nilai mentah |
+|---|---:|
+| `metrics/precision(B)` | 0,8850734184435352 |
+| `metrics/recall(B)` | 0,7805736969039915 |
+| `metrics/mAP50(B)` | 0,8539829367863725 |
+| `metrics/mAP50-95(B)` | 0,6476855973686102 |
+| `metrics/precision(M)` | 0,8902456090770972 |
+| `metrics/recall(M)` | 0,7821941168477433 |
+| `metrics/mAP50(M)` | 0,8492560575568179 |
+| `metrics/mAP50-95(M)` | 0,6105370743416991 |
+| `fitness` | 1,2582226717103093 |
+
+### Nilai mentah evaluasi akhir
+
+Nilai berikut diambil tanpa pembulatan dari `evaluation/final/ringkasan_test.json` bagian `total`.
+
+| Metrik | Nilai mentah |
+|---|---:|
+| `box_p` | 0,8850735547755999 |
+| `box_r` | 0,7805736991191967 |
+| `box_f1` | 0,8295455559732847 |
+| `box_map50` | 0,8541196336724688 |
+| `box_map5095` | 0,6477190263615329 |
+| `mask_p` | 0,8907641021745532 |
+| `mask_r` | 0,7822356736376641 |
+| `mask_f1` | 0,8329797380618063 |
+| `mask_map50` | 0,8475512387723771 |
+| `mask_map5095` | 0,6117560521272606 |
+
+### Nilai mentah akurasi tingkat gambar
+
+| Indikator | Nilai mentah |
+|---|---:|
+| Jumlah gambar evaluasi | 312 |
+| Gambar salah | 61 |
+| `akurasi_tingkat_gambar` | 0,8045 |
+| `presisi_mikro_gambar` | 0,922 |
+| `recall_mikro_gambar` | 0,9098 |
+| `f1_mikro_gambar` | 0,9159 |
+| `f1_makro_gambar` | 0,9143 |
+
+Jumlah gambar salah per varian:
+
+| Varian | Gambar salah |
+|---|---:|
+| gerak_diagonal | 15 |
+| gerak_horizontal | 20 |
+| gerak_vertikal | 11 |
+| getar | 15 |
+| Total | 61 |
+
+### Nilai mentah per kelas
+
+| Kelas | Box P | Box R | Box mAP50 | Box mAP50-95 | Mask P | Mask R | Mask mAP50 | Mask mAP50-95 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| pohon | 0,9846308092896334 | 1,0 | 0,995 | 0,9044289681099335 | 0,9852311366998912 | 1,0 | 0,995 | 0,8779504155763667 |
+| mobil | 0,8977227397813299 | 0,7504810223014423 | 0,8456219367043477 | 0,5856976576013708 | 0,9153411133010018 | 0,7636846234338663 | 0,8448957447049819 | 0,5415880875912391 |
+| motor | 0,9129262729881418 | 0,7907326690240791 | 0,8882323616367929 | 0,6385073092584529 | 0,9481858585069705 | 0,8178674102348811 | 0,9181640452954154 | 0,5801310784415681 |
+| orang | 0,8582778957590607 | 0,7366548042704626 | 0,8081254651312417 | 0,5864025487005654 | 0,8273520603209127 | 0,7046263345195729 | 0,762822789011519 | 0,5308559823536135 |
+| lubang | 0,7718100560598334 | 0,625 | 0,7336184048899628 | 0,5235586481373415 | 0,7777103420439897 | 0,625 | 0,7168736148499693 | 0,5282546966735155 |
+
+### Data mentah dataset
+
+| Item | Nilai |
+|---|---:|
+| Gambar train | 2.778 |
+| Background train | 101 |
+| File train rusak | 0 |
+| Gambar validasi | 312 |
+| Background validasi | 12 |
+| File validasi rusak | 0 |
+| Overlap gambar train dan validasi | 0 |
+| Total instance validasi | 1.072 |
+| Jumlah kelas | 5 |
+
+Jumlah gambar dan instance validasi per kelas:
+
+| Kelas | Gambar | Instance |
+|---|---:|---:|
+| pohon | 76 | 76 |
+| mobil | 87 | 269 |
+| motor | 61 | 358 |
+| orang | 93 | 281 |
+| lubang | 60 | 88 |
+| Total | 377 | 1.072 |
+
+Catatan: total gambar per kelas adalah jumlah kehadiran kelas pada gambar validasi, sehingga nilainya lebih besar dari 312 karena satu gambar dapat memuat beberapa kelas.
+
 ### Akurasi per kelas
 
 | Kelas | Gambar | Instance | Box P | Box R | Box F1 | Box mAP50 | Box mAP50-95 | Mask P | Mask R | Mask F1 | Mask mAP50 | Mask mAP50-95 |
@@ -427,6 +519,42 @@ Gunakan `--sumber` untuk indeks kamera atau path video. Contoh integrasi tanpa k
 | Ringkasan akurasi | `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/laporan_akurasi.txt` |
 | Kecepatan | `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/kecepatan.json` |
 | Bobot terbaik | `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/weights/best.pt` |
+
+### Ukuran artefak mentah
+
+| File | Ukuran byte | Ukuran perkiraan |
+|---|---:|---:|
+| `training_semua_20261107_154452_851599.log` | 12.800.220 | 12,2 MiB |
+| `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/training.log` | 12.800.220 | 12,2 MiB |
+| `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/raw/training.log` | 12.800.220 | 12,2 MiB |
+| `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/results.csv` | 18.044 | 17,6 KiB |
+| `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/raw/results.csv` | 18.044 | 17,6 KiB |
+| `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/training_report.json` | 11.019 | 10,8 KiB |
+| `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/training_report.txt` | 1.911 | 1,9 KiB |
+| `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/val_class_metrics.csv` | 906 | 0,9 KiB |
+| `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/evaluation_20261108_000253.log` | 33.212 | 32,4 KiB |
+| `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/ringkasan_test.json` | 7.282 | 7,1 KiB |
+| `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/kecepatan.json` | 191 | 0,2 KiB |
+
+### Contoh baris log mentah
+
+Baris pertama dan terakhir `raw/results.csv`:
+
+```csv
+epoch,time,train/box_loss,train/seg_loss,train/cls_loss,train/l1_loss,train/sem_loss,metrics/precision(B),metrics/recall(B),metrics/mAP50(B),metrics/mAP50-95(B),metrics/precision(M),metrics/recall(M),metrics/mAP50(M),metrics/mAP50-95(M),val/box_loss,val/seg_loss,val/cls_loss,val/l1_loss,val/sem_loss,lr/pg0,lr/pg1,lr/pg2
+1,239.938,1.76673,2.97699,2.41388,0.01774,2.57882,0.62727,0.6203,0.63025,0.38464,0.59989,0.61753,0.60636,0.36824,1.52163,2.33796,1.66756,0.02639,0,0.000332854,0.000332854,0.0670475
+100,29825.4,0.81905,1.19443,0.48865,0.00821,0.16891,0.88227,0.77763,0.8493,0.64305,0.90166,0.76424,0.84035,0.61078,1.08035,1.63396,0.7739,0.01567,0,1.99e-05,1.99e-05,1.99e-05
+```
+
+Cuplikan log konsol saat training:
+
+```text
+[INFO] Kelas: pohon, mobil, motor, orang, lubang | train: 2778 gambar | val: 312 gambar
+[INFO] Resolusi       : 512px | batch: 4 | epoch maks: 100
+[INFO] GPU            : NVIDIA GeForce GTX 1650 with Max-Q Design
+Starting training for 100 epochs...
+100 epochs completed in 8.285 hours.
+```
 
 ## Catatan
 
