@@ -41,6 +41,39 @@ runs/segment/runs/semua_kelas_yolo26n_20261107_154452/
 | Waktu training | 29.825,4 detik atau sekitar 8,28 jam |
 | Checkpoint terbaik | `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/weights/best.pt` |
 
+### Split dataset dan seed
+
+Run terbaru memakai pembagian aktual 90% train dan 10% validasi, bukan 80% train dan 20% validasi. Nilai pembagi berada di `train_semua.py` pada `VAL_FRACTION = 0.10`.
+
+| Parameter split | Nilai |
+|---|---|
+| `VAL_FRACTION` | 0,10 |
+| Proporsi train | 90% |
+| Proporsi validasi | 10% |
+| Jumlah gambar train | 2.778 |
+| Jumlah gambar validasi | 312 |
+| Total gambar | 3.090 |
+| Persentase train aktual | 89,90% |
+| Persentase validasi aktual | 10,10% |
+| Seed pengacakan split | 0, memakai `random.Random(0)` |
+| Seed training | 0, memakai `SEED_LATIH = 0` |
+| Deterministic | `True` |
+| Cache dataset | `False` |
+| AMP | `True` |
+| Manifest train | `runs/dataset_splits/train.txt` |
+| Manifest validasi | `runs/dataset_splits/val.txt` |
+
+Cara split bekerja:
+
+1. Gambar dikelompokkan berdasarkan nama sebelum penanda `__`, sehingga varian dari objek yang sama tidak terpisah antara train dan validasi.
+2. Daftar grup diacak dengan `random.Random(0)`.
+3. Sebanyak 10% grup dipilih sebagai validasi.
+4. Sisa grup menjadi train.
+5. Pipeline memastikan kelima kelas tetap muncul di train dan validasi.
+6. Hasil split ditulis ke `train.txt` dan `val.txt`, lalu dibaca oleh `dataset_gabungan.yaml`.
+
+Jika ingin memakai 80% train dan 20% validasi, ubah `VAL_FRACTION = 0.20` di `train_semua.py`, lalu jalankan training ulang. Metrik pada README ini tetap berlaku untuk split 90/10 dan tidak dapat dibandingkan langsung dengan hasil split 80/20.
+
 ### Tabel indikator utama
 
 | Indikator | Nilai | Keterangan |
