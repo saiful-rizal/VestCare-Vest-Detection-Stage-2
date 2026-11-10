@@ -2,6 +2,56 @@ import { useEffect, useRef, useState } from "react";
 import { normalizeDetections } from "../data";
 
 const API_URL = "/deteksi";
+const REALTIME_DETECTION_INTERVAL_MS = 200;
+const BOX_SMOOTHING = 0.72;
+const MAX_TRACK_CENTER_DISTANCE = 0.3;
+
+function smoothDetectionBoxes(detections, previousDetections) {
+  const matchedPrevious = new Set();
+
+  return detections.map((detection) => {
+    const bbox = detection.bbox;
+    if (!Array.isArray(bbox) || bbox.length !== 4 || !bbox.every(Number.isFinite)) {
+      return detection;
+    }
+
+    const centerX = (bbox[0] + bbox[2]) / 2;
+    const centerY = (bbox[1] + bbox[3]) / 2;
+    let bestIndex = -1;
+    let bestDistance = MAX_TRACK_CENTER_DISTANCE;
+
+    previousDetections.forEach((previous, index) => {
+      if (matchedPrevious.has(index) || previous.object !== detection.object) return;
+      const previousBox = previous.bbox;
+      if (!Array.isArray(previousBox) || previousBox.length !== 4 || !previousBox.every(Number.isFinite)) return;
+
+      const previousCenterX = (previousBox[0] + previousBox[2]) / 2;
+      const previousCenterY = (previousBox[1] + previousBox[3]) / 2;
+      const distance = Math.hypot(centerX - previousCenterX, centerY - previousCenterY);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = index;
+      }
+    });
+
+    if (bestIndex < 0) return detection;
+
+    matchedPrevious.add(bestIndex);
+    const previousBox = previousDetections[bestIndex].bbox;
+    return {
+      ...detection,
+      bbox: bbox.map((coordinate, index) => (
+        previousBox[index] * (1 - BOX_SMOOTHING) + coordinate * BOX_SMOOTHING
+      )),
+    };
+  });
+}
+
+function labelGerak(detection) {
+  if (detection.gerak === "diam") return "DIAM";
+  if (detection.gerak !== "bergerak") return null;
+  return detection.object.toLowerCase() === "orang" ? "BERJALAN" : "BERGERAK";
+}
 
 function createSilentWavUrl() {
   const sampleRate = 8000;
@@ -191,10 +241,14 @@ export default function CameraCapture({ onDetections }) {
 
     let active = true;
     let timer;
+    let requestController;
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d", { alpha: false });
     let alertKey = null;
     let alertLevel = 0;
     let lastAlertAt = 0;
     let lastSpokenAt = 0;
+    let previousDetections = [];
 
     function renderBoxes(detections) {
       const video = videoRef.current;
@@ -229,7 +283,8 @@ export default function CameraCapture({ onDetections }) {
         const color = detection.level === "BAHAYA" ? "#ff4055"
           : detection.level === "WASPADA" ? "#ffbd35"
           : detection.level === "INFO" ? "#46dd91" : "#31c7e8";
-        const label = `${index + 1}. ${detection.object} | ${detection.level} | ${detection.distance.toFixed(1)} m`;
+        const gerak = labelGerak(detection);
+        const label = `${index + 1}. ${detection.object} | ${detection.level} | ${detection.distance.toFixed(1)} m${gerak ? ` | ${gerak}` : ""}`;
 
         context.strokeStyle = color;
         context.strokeRect(x, y, boxWidth, boxHeight);
@@ -250,11 +305,9 @@ export default function CameraCapture({ onDetections }) {
       }
 
       detectingRef.current = true;
-      const canvas = document.createElement("canvas");
-      const scale = Math.min(1, 640 / video.videoWidth);
+      const scale = Math.min(1, 512 / video.videoWidth);
       canvas.width = Math.round(video.videoWidth * scale);
       canvas.height = Math.round(video.videoHeight * scale);
-      const context = canvas.getContext("2d");
 
       try {
         if (!context) throw new Error("Tidak dapat menyiapkan gambar kamera.");
@@ -268,12 +321,20 @@ export default function CameraCapture({ onDetections }) {
 
         const body = new FormData();
         body.append("gambar", blob, "vest-care-live.jpg");
-        const response = await fetch(API_URL, { method: "POST", body });
+        body.append("mode_realtime", "true");
+        requestController = new AbortController();
+        const response = await fetch(API_URL, {
+          method: "POST",
+          body,
+          cache: "no-store",
+          signal: requestController.signal,
+        });
         const payload = await response.json().catch(() => ({}));
         if (!active) return;
         if (!response.ok) throw new Error(payload.detail || `Server deteksi mengembalikan ${response.status}.`);
 
-        const detections = normalizeDetections(payload);
+        const detections = smoothDetectionBoxes(normalizeDetections(payload), previousDetections);
+        previousDetections = detections;
         setLiveDetections(detections);
         renderBoxes(detections);
         onDetectionsRef.current(detections);
@@ -323,7 +384,7 @@ export default function CameraCapture({ onDetections }) {
         }
       } finally {
         detectingRef.current = false;
-        if (active) timer = window.setTimeout(detectFrame, 1000);
+        if (active) timer = window.setTimeout(detectFrame, REALTIME_DETECTION_INTERVAL_MS);
       }
     }
 
@@ -332,6 +393,7 @@ export default function CameraCapture({ onDetections }) {
     return () => {
       active = false;
       window.clearTimeout(timer);
+      requestController?.abort();
       detectingRef.current = false;
     };
   }, [status]);
@@ -481,7 +543,10 @@ export default function CameraCapture({ onDetections }) {
                 {liveDetections.map((detection, index) => (
                   <li key={`${detection.object}-${detection.arah}-${index}`}>
                     <strong>{detection.level} | {detection.object} {detection.arah}</strong>
-                    <span>{detection.distance.toFixed(1)} m | confidence {Math.round(detection.confidence)}%</span>
+                    <span>
+                      {detection.distance.toFixed(1)} m | confidence {Math.round(detection.confidence)}%
+                      {labelGerak(detection) ? ` | ${labelGerak(detection)}` : ""}
+                    </span>
                   </li>
                 ))}
               </ul>

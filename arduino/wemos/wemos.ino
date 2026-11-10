@@ -4,7 +4,6 @@
 #include <WiFiManager.h>
 #include <SoftwareSerial.h>
 #include <TinyGPSPlus.h>
-#include <EEPROM.h>
 #include <time.h>
 
 #define TRIG_PIN D6
@@ -20,43 +19,31 @@ const int JUMLAH_SAMPEL = 5;
 const unsigned long JEDA_BACA = 60;
 const unsigned long JEDA_TELEMETRI = 5000;
 const bool TAMPILKAN_MENTAH = false;
-const uint32_t CONFIG_MAGIC = 0x56435431;
-const size_t EEPROM_SIZE = 256;
 const time_t WAKTU_TLS_MINIMUM = 1780000000;
-const char DEFAULT_SERVER_URL[] = "https://italics-blast-vibes.ngrok-free.dev";
+const char SERVER_URL[] = "https://italics-blast-vibes.ngrok-free.dev";
 
-const char SERTIFIKAT_ROOT_YE[] PROGMEM = R"PEM(
+const char SERTIFIKAT_ROOT_X2[] PROGMEM = R"PEM(
 -----BEGIN CERTIFICATE-----
-MIICpjCCAiugAwIBAgIRAIchZfw0tuX7qK3Vs3BftTowCgYIKoZIzj0EAwMwTzEL
-MAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2VhcmNo
-IEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDIwHhcNMjYwNTEzMDAwMDAwWhcN
-MzIwOTAyMjM1OTU5WjAuMQswCQYDVQQGEwJVUzENMAsGA1UEChMESVNSRzEQMA4G
-A1UEAxMHUm9vdCBZRTB2MBAGByqGSM49AgEGBSuBBAAiA2IABDwS/6vhrcVqcbBo
-+wgdI3fwn9x7DNJJOY/lTOti0vkwuRN87RhEhTH17E7XyFjWsPYhIPt/wzOqxTd2
-b+4ZJNy9ID04YywF9U5zasDVyGSNErVNtz8uSGh5izW87j77GaOB6zCB6DAOBgNV
-HQ8BAf8EBAMCAQYwEwYDVR0lBAwwCgYIKwYBBQUHAwEwDwYDVR0TAQH/BAUwAwEB
-/zAdBgNVHQ4EFgQUo8gmWo6hTNA1Y/ybI8g6rlbzT1YwHwYDVR0jBBgwFoAUfEKW
-rt5LSDv6kviejM9ti6lyN5UwMgYIKwYBBQUHAQEEJjAkMCIGCCsGAQUFBzAChhZo
-dHRwOi8veDIuaS5sZW5jci5vcmcvMBMGA1UdIAQMMAowCAYGZ4EMAQIBMCcGA1Ud
-HwQgMB4wHKAaoBiGFmh0dHA6Ly94Mi5jLmxlbmNyLm9yZy8wCgYIKoZIzj0EAwMD
-aQAwZgIxAMU19WCtmxVND8UHBZRoma49Z7jPs64Dma0eTu1OChVbB/2J7GV3nvYK
-Ax54uk1G9QIxAO0miLVJu8PLNiXXXkiE/gsK3CTRTF/aeo4bMX42Zw40csRU6AC2
-6hSW1/IWaas6dg==
+MIICGzCCAaGgAwIBAgIQQdKd0XLq7qeAwSxs6S+HUjAKBggqhkjOPQQDAzBPMQsw
+CQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJuZXQgU2VjdXJpdHkgUmVzZWFyY2gg
+R3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBYMjAeFw0yMDA5MDQwMDAwMDBaFw00
+MDA5MTcxNjAwMDBaME8xCzAJBgNVBAYTAlVTMSkwJwYDVQQKEyBJbnRlcm5ldCBT
+ZWN1cml0eSBSZXNlYXJjaCBHcm91cDEVMBMGA1UEAxMMSVNSRyBSb290IFgyMHYw
+EAYHKoZIzj0CAQYFK4EEACIDYgAEzZvVn4CDCuwJSvMWSj5cz3es3mcFDR0HttwW
++1qLFNvicWDEukWVEYmO6gbf9yoWHKS5xcUy4APgHoIYOIvXRdgKam7mAHf7AlF9
+ItgKbppbd9/w+kHsOdx1ymgHDB/qo0IwQDAOBgNVHQ8BAf8EBAMCAQYwDwYDVR0T
+AQH/BAUwAwEB/zAdBgNVHQ4EFgQUfEKWrt5LSDv6kviejM9ti6lyN5UwCgYIKoZI
+zj0EAwMDaAAwZQIwe3lORlCEwkSHRhtFcP9Ymd70/aTSVaYgLXTWNLxBo1BfASdW
+tL4ndQavEi51mI38AjEAi/V3bNTIZargCyzuFJ0nN6T5U6VR5CmD1/iQMVtCnwr1
+/q4AaOeMSQ+2b1tbFfLn
 -----END CERTIFICATE-----
 )PEM";
 
-BearSSL::X509List tlsTrustAnchors(SERTIFIKAT_ROOT_YE);
-
-struct KonfigurasiVestCare {
-  uint32_t magic;
-  char serverUrl[128];
-  char apiKey[65];
-};
+BearSSL::X509List tlsTrustAnchors(SERTIFIKAT_ROOT_X2);
 
 ESP8266WebServer server(80);
 SoftwareSerial gpsSerial(PIN_TERIMA_DARI_GPS, PIN_KIRIM_KE_GPS);
 TinyGPSPlus gps;
-KonfigurasiVestCare konfigurasi;
 
 float kecepatanSuara = 0;
 float sampel[JUMLAH_SAMPEL];
@@ -67,8 +54,6 @@ float jarakTerakhir = -1;
 unsigned long waktuBaca = 0;
 unsigned long waktuLaporan = 0;
 unsigned long waktuTelemetri = 0;
-bool simpanKonfigurasi = false;
-
 const char halaman[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html>
@@ -306,28 +291,8 @@ void handleData() {
   server.send(200, "application/json", json);
 }
 
-void tandaiKonfigurasiUntukDisimpan() {
-  simpanKonfigurasi = true;
-}
-
-void muatKonfigurasi() {
-  EEPROM.begin(EEPROM_SIZE);
-  EEPROM.get(0, konfigurasi);
-  if (konfigurasi.magic != CONFIG_MAGIC) {
-    memset(&konfigurasi, 0, sizeof(konfigurasi));
-    konfigurasi.magic = CONFIG_MAGIC;
-  } else {
-    konfigurasi.serverUrl[sizeof(konfigurasi.serverUrl) - 1] = '\0';
-    konfigurasi.apiKey[sizeof(konfigurasi.apiKey) - 1] = '\0';
-  }
-
-  if (konfigurasi.serverUrl[0] == '\0') {
-    snprintf(konfigurasi.serverUrl, sizeof(konfigurasi.serverUrl), "%s", DEFAULT_SERVER_URL);
-  }
-}
-
 bool urlServerValid() {
-  String url = String(konfigurasi.serverUrl);
+  String url = String(SERVER_URL);
   url.trim();
   while (url.endsWith("/")) {
     url.remove(url.length() - 1);
@@ -344,18 +309,6 @@ bool urlServerValid() {
     && url.indexOf(' ', hostStart) < 0;
 }
 
-void simpanKonfigurasiBaru(const char *serverUrl, const char *apiKey) {
-  snprintf(konfigurasi.serverUrl, sizeof(konfigurasi.serverUrl), "%s", serverUrl);
-  snprintf(konfigurasi.apiKey, sizeof(konfigurasi.apiKey), "%s", apiKey);
-  konfigurasi.magic = CONFIG_MAGIC;
-  EEPROM.put(0, konfigurasi);
-  if (!EEPROM.commit()) {
-    Serial.println("[SERVER] Gagal menyimpan konfigurasi ke EEPROM.");
-    return;
-  }
-  Serial.println("[SERVER] Konfigurasi server tersimpan.");
-}
-
 void tambahAngkaJson(String &json, bool valid, double nilai, uint8_t desimal) {
   if (valid) {
     json += String(nilai, desimal);
@@ -364,19 +317,22 @@ void tambahAngkaJson(String &json, bool valid, double nilai, uint8_t desimal) {
   }
 }
 
-int kirimHttpTelemetri(WiFiClient &client, const String &endpoint, const String &payload) {
+int kirimHttpTelemetri(
+  WiFiClient &client,
+  const String &endpoint,
+  const String &payload,
+  BearSSL::WiFiClientSecure *tlsClient = nullptr
+) {
   HTTPClient http;
-  http.setTimeout(8000);
+  client.setTimeout(15000);
+  http.setTimeout(15000);
   if (!http.begin(client, endpoint)) {
     Serial.println("[SERVER] Gagal memulai koneksi HTTP.");
     return -1;
   }
 
   http.addHeader("Content-Type", "application/json");
-  http.addHeader("ngrok-skip-browser-warning", "1");
-  if (konfigurasi.apiKey[0] != '\0') {
-    http.addHeader("X-API-Key", konfigurasi.apiKey);
-  }
+  http.addHeader("ngrok-skip-browser-warning", "true");
 
   const int status = http.POST(payload);
   if (status >= 200 && status < 300) {
@@ -385,6 +341,15 @@ int kirimHttpTelemetri(WiFiClient &client, const String &endpoint, const String 
     Serial.printf("[SERVER] Telemetri ditolak (HTTP %d).\n", status);
   } else {
     Serial.printf("[SERVER] Koneksi gagal: %s\n", http.errorToString(status).c_str());
+    Serial.printf("[NET] IP=%s, heap bebas=%u byte.\n",
+      WiFi.localIP().toString().c_str(), ESP.getFreeHeap());
+    if (tlsClient != nullptr) {
+      char tlsError[128] = {0};
+      const int tlsErrorCode = tlsClient->getLastSSLError(tlsError, sizeof(tlsError));
+      Serial.printf("[TLS] BearSSL %d: %s\n",
+        tlsErrorCode, tlsError[0] != '\0' ? tlsError : "tidak ada detail error");
+      Serial.printf("[TLS] Waktu perangkat: %lu\n", static_cast<unsigned long>(time(nullptr)));
+    }
   }
   http.end();
   return status;
@@ -400,7 +365,7 @@ void kirimTelemetri() {
     return;
   }
 
-  String baseUrl = String(konfigurasi.serverUrl);
+  String baseUrl = String(SERVER_URL);
   baseUrl.trim();
   while (baseUrl.endsWith("/")) {
     baseUrl.remove(baseUrl.length() - 1);
@@ -456,7 +421,7 @@ void kirimTelemetri() {
 
     BearSSL::WiFiClientSecure client;
     client.setTrustAnchors(&tlsTrustAnchors);
-    kirimHttpTelemetri(client, endpoint, payload);
+    kirimHttpTelemetri(client, endpoint, payload, &client);
     return;
   }
 
@@ -475,36 +440,12 @@ void setup() {
 
   kecepatanSuara = 331.3f + 0.606f * SUHU_UDARA;
 
-  muatKonfigurasi();
   WiFiManager wm;
   if (digitalRead(RESET_PIN) == LOW) {
-    Serial.println("Menghapus pengaturan WiFi dan server...");
+    Serial.println("Menghapus pengaturan WiFi...");
     wm.resetSettings();
-    memset(&konfigurasi, 0, sizeof(konfigurasi));
-    konfigurasi.magic = CONFIG_MAGIC;
-    snprintf(konfigurasi.serverUrl, sizeof(konfigurasi.serverUrl), "%s", DEFAULT_SERVER_URL);
-    EEPROM.put(0, konfigurasi);
-    if (!EEPROM.commit()) {
-      Serial.println("[SERVER] Gagal menghapus konfigurasi EEPROM.");
-    }
     delay(1000);
   }
-
-  WiFiManagerParameter parameterServer(
-    "server_url",
-    "URL server VestCare (sudah terisi otomatis)",
-    konfigurasi.serverUrl,
-    sizeof(konfigurasi.serverUrl)
-  );
-  WiFiManagerParameter parameterApiKey(
-    "api_key",
-    "VEST_API_KEY (kosongkan jika autentikasi server nonaktif)",
-    konfigurasi.apiKey,
-    sizeof(konfigurasi.apiKey)
-  );
-  wm.addParameter(&parameterServer);
-  wm.addParameter(&parameterApiKey);
-  wm.setSaveConfigCallback(tandaiKonfigurasiUntukDisimpan);
 
   wm.setAPCallback(configModeCallback);
   wm.setConfigPortalTimeout(180);
@@ -517,10 +458,6 @@ void setup() {
     ESP.restart();
   }
 
-  if (simpanKonfigurasi) {
-    simpanKonfigurasiBaru(parameterServer.getValue(), parameterApiKey.getValue());
-  }
-
   digitalWrite(LED_PIN, HIGH);
   Serial.println("\nWiFi terhubung!");
   Serial.print("SSID : ");
@@ -528,15 +465,15 @@ void setup() {
   Serial.print("IP   : ");
   Serial.println(WiFi.localIP());
 
-  if (String(konfigurasi.serverUrl).startsWith("https://")) {
+  if (String(SERVER_URL).startsWith("https://")) {
     configTime(7 * 60 * 60, 0, "pool.ntp.org", "time.nist.gov");
     Serial.println("[TLS] Sinkronisasi waktu NTP diaktifkan.");
   }
 
   if (urlServerValid()) {
-    Serial.printf("[SERVER] Telemetri menuju %s/api/telemetri\n", konfigurasi.serverUrl);
+    Serial.printf("[SERVER] Telemetri menuju %s/api/telemetri\n", SERVER_URL);
   } else {
-    Serial.println("[SERVER] URL belum valid. Atur URL server melalui portal Wemos.");
+    Serial.println("[SERVER] URL server pada firmware tidak valid.");
   }
 
   server.on("/", handleRoot);

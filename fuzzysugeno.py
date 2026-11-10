@@ -1,6 +1,6 @@
 import math
 from collections.abc import Mapping
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence, cast
 
 import time
 
@@ -360,10 +360,10 @@ class IngatanHalangan:
 
 
 class PelacakGerak:
-    """Menaksir gerak objek dari perubahan jarak antar frame.
+    """Menaksir gerak objek dari perubahan jarak dan posisi antar frame.
 
-    Tanpa sensor kecepatan pengguna, objek disebut "bergerak" bila mendekat
-    lebih cepat dari kecepatan jalan, dan "diam" bila jaraknya relatif stabil.
+    Perubahan posisi kotak deteksi menangkap gerak menyamping yang tidak terlihat
+    dari jarak, sedangkan perubahan jarak menangkap objek yang mendekat.
     """
 
     def __init__(
@@ -371,6 +371,8 @@ class PelacakGerak:
         kelas: Sequence[str] = KELAS_GERAK,
         ambang_cepat_ms: float = 1.8,
         ambang_diam_ms: float = 0.4,
+        ambang_posisi_per_detik: float = 0.05,
+        ambang_posisi_diam_per_detik: float = 0.025,
         min_sampel: int = 3,
         umur_maks: float = 1.5,
         waktu_fn: Callable[[], float] = time.monotonic,
@@ -378,14 +380,17 @@ class PelacakGerak:
         self.kelas = tuple(kelas)
         self.ambang_cepat = float(ambang_cepat_ms)
         self.ambang_diam = float(ambang_diam_ms)
+        self.ambang_posisi = float(ambang_posisi_per_detik)
+        self.ambang_posisi_diam = float(ambang_posisi_diam_per_detik)
         self.min_sampel = max(1, int(min_sampel))
         self.umur_maks = float(umur_maks)
         self._waktu = waktu_fn
-        self._s: dict[tuple[str, str], dict[str, Any]] = {}
+        self._s: dict[int, dict[str, Any]] = {}
+        self._id_berikutnya = 0
 
     def perbarui(self, daftar: list[dict[str, Any]]) -> list[dict[str, Any]]:
         kini = self._waktu()
-        terlihat: set[tuple[str, str]] = set()
+        terpakai: set[int] = set()
 
         for d in daftar:
             d.setdefault("gerak", "netral")
@@ -394,32 +399,77 @@ class PelacakGerak:
             if kelas not in self.kelas or j is None or d.get("sumber") == "ingatan" or d.get("ragu"):
                 continue
 
-            kunci = (str(kelas), str(arah))
-            terlihat.add(kunci)
+            bbox = d.get("bbox")
+            pusat: tuple[float, float] | None = None
+            if isinstance(bbox, (list, tuple)):
+                coordinates: list[float] = []
+                for value in cast(Sequence[object], bbox):
+                    if not isinstance(value, (int, float)):
+                        break
+                    coordinate = float(value)
+                    if not math.isfinite(coordinate):
+                        break
+                    coordinates.append(coordinate)
+                    if len(coordinates) > 4:
+                        break
+                if len(coordinates) == 4:
+                    pusat = ((coordinates[0] + coordinates[2]) / 2, (coordinates[1] + coordinates[3]) / 2)
 
-            st = self._s.get(kunci)
-            if st is None or kini - st["t"] > self.umur_maks:
-                self._s[kunci] = {"t": kini, "j": float(j), "v": None, "gerak": 0, "diam": 0}
+            kandidat: tuple[float, int, dict[str, Any]] | None = None
+            for id_objek, calon in self._s.items():
+                if id_objek in terpakai or calon["kelas"] != kelas or kini - calon["t"] > self.umur_maks:
+                    continue
+                pusat_lama = calon["pusat"]
+                if pusat is not None and pusat_lama is not None:
+                    selisih = math.hypot(pusat[0] - pusat_lama[0], pusat[1] - pusat_lama[1])
+                    if selisih > 0.35:
+                        continue
+                elif calon["arah"] != arah:
+                    continue
+                else:
+                    selisih = 0.0
+                if kandidat is None or selisih < kandidat[0]:
+                    kandidat = (selisih, id_objek, calon)
+
+            if kandidat is None:
+                id_objek = self._id_berikutnya
+                self._id_berikutnya += 1
+                self._s[id_objek] = {
+                    "kelas": kelas, "arah": arah, "t": kini, "j": float(j),
+                    "pusat": pusat, "v_jarak": None, "v_posisi": None,
+                    "gerak": 0, "diam": 0,
+                }
+                terpakai.add(id_objek)
                 continue
 
+            _, id_objek, st = kandidat
+            terpakai.add(id_objek)
             dt = kini - st["t"]
             if dt < 0.05:
                 continue
 
-            v = (st["j"] - float(j)) / dt
-            st["v"] = v if st["v"] is None else 0.5 * st["v"] + 0.5 * v
-            st["t"], st["j"] = kini, float(j)
+            v_jarak = (st["j"] - float(j)) / dt
+            st["v_jarak"] = v_jarak if st["v_jarak"] is None else 0.5 * st["v_jarak"] + 0.5 * v_jarak
+            v_posisi = None
+            if pusat is not None and st["pusat"] is not None:
+                v_posisi = math.hypot(pusat[0] - st["pusat"][0], pusat[1] - st["pusat"][1]) / dt
+                st["v_posisi"] = v_posisi if st["v_posisi"] is None else 0.5 * st["v_posisi"] + 0.5 * v_posisi
+            elif pusat is not None:
+                st["v_posisi"] = None
+            st["t"], st["j"], st["pusat"], st["arah"] = kini, float(j), pusat, arah
 
-            st["gerak"] = st["gerak"] + 1 if st["v"] >= self.ambang_cepat else 0
-            st["diam"] = st["diam"] + 1 if abs(st["v"]) <= self.ambang_diam else 0
+            posisi_bergerak = st["v_posisi"] is not None and st["v_posisi"] >= self.ambang_posisi
+            posisi_diam = st["v_posisi"] is None or st["v_posisi"] <= self.ambang_posisi_diam
+            st["gerak"] = st["gerak"] + 1 if st["v_jarak"] >= self.ambang_cepat or posisi_bergerak else 0
+            st["diam"] = st["diam"] + 1 if abs(st["v_jarak"]) <= self.ambang_diam and posisi_diam else 0
 
             if st["gerak"] >= self.min_sampel:
                 d["gerak"] = "bergerak"
             elif st["diam"] >= 2 * self.min_sampel:
                 d["gerak"] = "diam"
 
-        for kunci in [k for k, st in self._s.items() if k not in terlihat and kini - st["t"] > self.umur_maks]:
-            del self._s[kunci]
+        for id_objek in [k for k, st in self._s.items() if kini - st["t"] > self.umur_maks]:
+            del self._s[id_objek]
 
         return daftar
 
@@ -501,16 +551,8 @@ def hitung_peringatan(
     skor_risiko = max(0.0, min(1.0, _angka_terbatas(skor_risiko, "skor_risiko")))
 
     if jarak_m is None:
-        if skor_risiko >= 0.75:
-            tingkat = "bahaya"
-
-        elif skor_risiko >= 0.45:
-            tingkat = "waspada"
-
-        else:
-            tingkat = "aman"
-
         nilai = skor_risiko * 100.0
+        tingkat = level(nilai).lower()
 
         ket = "jarak_m=None -> fallback tanpa fuzzy jarak"
 

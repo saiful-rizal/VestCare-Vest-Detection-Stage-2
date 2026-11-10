@@ -484,7 +484,7 @@ Frontend, dibaca dari `vest-care-react/.env.local`:
 | `GET` | `/docs` | Dokumentasi OpenAPI |
 | `GET` | `/dashboard/data` | Data perangkat, deteksi, GPS, dan jejak dari Supabase/server |
 | `GET` | `/config` | Konfigurasi publik dashboard: titik pusat peta, zoom, dan kunci Google Maps |
-| `POST` | `/api/telemetri` | Telemetri jarak dan GPS dari Wemos; memerlukan `X-API-Key` jika autentikasi aktif |
+| `POST` | `/api/telemetri` | Telemetri jarak dan GPS dari Wemos; endpoint publik tanpa API key |
 | `GET` | `/api/telemetri` | Telemetri terakhir, status online, dan jejak GPS |
 | `GET` | `/api/telemetri/stream` | Server-Sent Events telemetri realtime untuk peta Google Maps |
 | `POST` | `/deteksi` | Upload gambar multipart dan `jarak_m` opsional |
@@ -585,11 +585,11 @@ Peta dashboard memakai Google Maps. Isi `GOOGLE_MAPS_API_KEY` pada `.env` root d
 ### Menghubungkan Wemos ke server dan dashboard
 
 1. Sambungkan komputer/server dan Wemos ke jaringan Wi-Fi yang sama. Jalankan server dengan `VEST_HOST=0.0.0.0` dan port yang sesuai.
-2. Saat portal konfigurasi `Wemos_Setup` muncul, isi Wi-Fi saja. URL server ngrok aktif sudah menjadi default di sketch dan terisi otomatis; URL itu harus diperbarui dan sketch di-flash ulang jika alamat ngrok berubah.
-3. Isi nilai `VEST_API_KEY` yang sama dengan konfigurasi server. Wemos menyimpan pengaturan di EEPROM; tahan D5 saat boot untuk menghapus konfigurasi Wi-Fi/server dan membuka portal konfigurasi lagi.
-4. Wemos mengirim jarak ultrasonik dan GPS melalui HTTPS ke `/api/telemetri` setiap 5 detik, menggunakan header `X-API-Key` dan `ngrok-skip-browser-warning`. Sertifikat TLS diverifikasi dan waktu sertifikat disinkronkan lewat NTP; jangan matikan verifikasi TLS. Dashboard di URL ngrok yang sama akan menampilkan status perangkat dan lokasi. Pada kunjungan browser pertama ke domain ngrok gratis, buka/konfirmasi halaman peringatan ngrok terlebih dahulu. Periksa Serial Monitor 115200 baud untuk status HTTP.
+2. Saat portal konfigurasi `Wemos_Setup` muncul, isi Wi-Fi saja. URL server saat ini ditetapkan di `arduino/wemos/wemos.ino`; jika alamat ngrok berubah, perbarui `SERVER_URL` dan flash ulang firmware.
+3. Endpoint `POST /api/telemetri` menerima kiriman publik tanpa `VEST_API_KEY` agar Wemos tidak memerlukan konfigurasi key. Jangan gunakan endpoint ini untuk data sensitif: siapa pun yang mengetahui URL server dapat mengirim telemetri palsu. Endpoint API lain tetap mengikuti autentikasi server.
+4. Wemos mengirim jarak ultrasonik dan GPS melalui HTTPS ke `/api/telemetri` setiap 5 detik. Sertifikat TLS diverifikasi dan waktu sertifikat disinkronkan lewat NTP; jangan matikan verifikasi TLS. Dashboard di URL ngrok yang sama akan menampilkan status perangkat dan lokasi. Pada kunjungan browser pertama ke domain ngrok gratis, buka/konfirmasi halaman peringatan ngrok terlebih dahulu. Periksa Serial Monitor 115200 baud untuk status HTTP.
 
-Wemos menyimpan API key di EEPROM. Gunakan hanya pada perangkat dan jaringan Wi-Fi tepercaya, serta jangan membagikan sketch atau backup EEPROM yang berisi kunci tersebut. Trust anchor TLS yang dipakai mengikuti rantai Let's Encrypt untuk domain ngrok saat ini; perbarui sertifikat CA di sketch bila rantai sertifikat ngrok berubah.
+Wemos hanya menyimpan kredensial Wi-Fi melalui WiFiManager. Firmware memverifikasi HTTPS menggunakan trust anchor ISRG Root X2. Jika koneksi gagal, periksa detail `[TLS] BearSSL` dan waktu perangkat di Serial Monitor; jangan menonaktifkan verifikasi sertifikat.
 
 ### Deteksi dari kamera tanpa dashboard
 

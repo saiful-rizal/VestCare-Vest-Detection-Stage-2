@@ -1162,13 +1162,9 @@ class MasukanTelemetri(BaseModel):
 @app.post("/api/telemetri")
 async def telemetri_masuk(
     m: MasukanTelemetri,
-    request: Request,
     background_tasks: BackgroundTasks,
-    x_api_key: Optional[str] = Header(None),
 ):
-    if API_KEY_CONFIGURED:
-        _cek_api_key(request, x_api_key)
-
+    """Public telemetry endpoint for Wemos devices configured with Wi-Fi only."""
     global LATEST_TELEMETRI
     now = time.time()
     gps_fix = bool(m.fix and m.lat is not None and m.lng is not None)
@@ -1361,6 +1357,7 @@ async def deteksi(
     request: Request,
     gambar: UploadFile = File(..., description="file gambar (jpg/png) dari rompi/klien"),
     jarak_m: Optional[float] = Form(None, ge=0.03, le=3.0, description="jarak ultrasonik depan dalam METER"),
+    mode_realtime: bool = Form(False, description="lewati penyimpanan riwayat untuk frame kamera realtime"),
     x_api_key: Optional[str] = Header(None),
 ):
     _cek_api_key(request, x_api_key)
@@ -1380,6 +1377,8 @@ async def deteksi(
             "lat": tele["lat"],
             "lng": tele["lng"],
         }
+    if mode_realtime:
+        return JSONResponse(data)
     entri = await run_in_threadpool(_simpan_riwayat, data, "deteksi")
     return JSONResponse(entri)
 
