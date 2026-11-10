@@ -36,11 +36,10 @@ EXPECTED_CLASSES = {
 }
 VAL_FRACTION = 0.10
 
-# ==================== KONFIGURASI PELATIHAN ====================
 EPOCHS = 100
 IMGSZ = 512
 BATCH = 4
-WORKERS = 0            # Windows: 0 untuk menghindari error multiprocessing
+WORKERS = 0
 DEVICE = "0"
 PROJECT = "runs"
 EXIST_OK = False
@@ -77,8 +76,6 @@ FLIPUD = 0.0
 FLIPLR = 0.5
 MOSAIC = 1.0
 MIXUP = 0.0
-# ===============================================================
-
 MODELS_DIR = ROOT / "models"
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 

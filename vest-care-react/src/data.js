@@ -16,11 +16,21 @@ export const profile = {
 };
 
 /* DATA CONTOH. Ganti dengan data dari Supabase di hook useVestData (src/useVestData.js). */
+export const DEFAULT_MAP_CONFIG = {
+  apiKey: "",
+  center: { lat: -8.1689, lng: 113.702 },
+  zoom: 17,
+};
+
 export const initialState = {
   device: { online: false, battery: null, name: null, studentName: null, school: null },
   position: null,
   detections: [],
   history: [],
+  telemetry: null,
+  telemetryOnline: false,
+  trail: [],
+  mapConfig: DEFAULT_MAP_CONFIG,
   detectionHistoryLoading: true,
   detectionHistoryError: null,
 };
@@ -34,7 +44,6 @@ export function normalizeDetections(payload) {
     throw new Error("Respons server tidak berisi daftar deteksi yang valid.");
   }
 
-  const urgencyLabels = { BAHAYA: "Tinggi", WASPADA: "Sedang", INFO: "Rendah", AMAN: "Rendah" };
   const time = payload?.waktu || new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
 
   return items.filter((item) => !item.ragu).map((item) => {

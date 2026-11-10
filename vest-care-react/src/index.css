@@ -21,7 +21,7 @@
 .vc-student-text{position:absolute;left:24px;top:22px;color:#fff;z-index:1}
 .vc-student-text h5{margin:0;font-size:22px;font-weight:700;color:#fff}
 .vc-student-text p{margin:2px 0 0;font-size:13px;opacity:.85}
-.leaflet-container{z-index:0}
+.vc-google-map-embed{display:block;width:100%;border:0}
 .vc-camera-fab{position:fixed;right:24px;bottom:24px;z-index:900;display:flex;align-items:center;gap:8px;padding:13px 18px;border:0;border-radius:999px;background:#8f1006;color:#fff;box-shadow:0 10px 24px rgba(61,10,5,.35);font-weight:700;cursor:pointer;transition:transform .2s,box-shadow .2s}
 .vc-camera-fab:hover{transform:translateY(-2px);box-shadow:0 14px 28px rgba(61,10,5,.42)}
 .vc-camera-fab:focus-visible,.vc-camera-close:focus-visible,.vc-camera-primary:focus-visible,.vc-camera-secondary:focus-visible{outline:3px solid #f4b740;outline-offset:3px}

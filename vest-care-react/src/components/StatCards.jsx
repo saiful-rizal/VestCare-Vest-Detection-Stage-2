@@ -2,11 +2,26 @@ import StatCard from "./StatCard";
 import SubText from "./SubText";
 import { COLOR, fmt } from "../data";
 
-export default function StatCards({ device, detections, historyLoading, historyError }) {
-  const { online, battery } = device;
+export default function StatCards({ device, detections, telemetry, telemetryOnline, historyLoading, historyError }) {
+  const online = telemetryOnline ?? device.online;
+  const distance = telemetry?.jarak ?? null;
+  const distanceColor = distance == null
+    ? "#7a6460"
+    : distance < 1
+      ? COLOR.Tinggi
+      : distance < 2
+        ? COLOR.Sedang
+        : COLOR.Rendah;
+  const distanceLabel = distance == null
+    ? telemetry?.terbaca
+      ? "Di luar jangkauan"
+      : "Menunggu Wemos"
+    : distance < 1
+      ? "Sangat dekat"
+      : distance < 2
+        ? "Dekat"
+        : "Aman";
   const d = detections[0];
-  const bc = battery <= 20 ? COLOR.Tinggi : battery <= 50 ? COLOR.Sedang : COLOR.Rendah;
-  const bLabel = battery <= 20 ? "Rendah" : battery <= 50 ? "Sedang" : "Baik";
   const levelColors = { BAHAYA: COLOR.Tinggi, WASPADA: COLOR.Sedang, INFO: COLOR.Rendah, AMAN: COLOR.Rendah };
   const urgency = d?.level || d?.urgency?.toUpperCase() || "-";
   const urgencyColor = levelColors[urgency] || COLOR[d?.urgency] || COLOR.Sedang;
@@ -26,11 +41,11 @@ export default function StatCards({ device, detections, historyLoading, historyE
         icon="ni-button-power"
       />
       <StatCard
-        title="Baterai"
-        value={battery == null ? "-" : `${battery}%`}
-        sub={<SubText color={battery == null ? "#7a6460" : bc} strong={battery == null ? "Belum ada data" : bLabel}>kondisi baterai</SubText>}
+        title="Jarak sensor"
+        value={distance == null ? "-" : `${fmt(distance)} m`}
+        sub={<SubText color={distanceColor} strong={distanceLabel}>ultrasonik depan</SubText>}
         gradient="from-red-600 to-orange-600"
-        icon="ni-active-40"
+        icon="ni-sound-wave"
       />
       <StatCard
         title="Deteksi terakhir"

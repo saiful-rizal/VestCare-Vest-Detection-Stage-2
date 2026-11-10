@@ -369,7 +369,6 @@ class PemutarPeringatan:
 
         self.terakhir_diumumkan: Optional[dict] = None
 
-        # Guard agar tidak ada pemutaran ganda.
         self._kunci_sedang_diputar: Optional[tuple] = None
         self._waktu_putar_terakhir: float = 0.0
 
@@ -489,16 +488,12 @@ class PemutarPeringatan:
 
         berbunyi = self.sedang_berbunyi()
 
-        # Jeda minimum antar pemutaran apa pun mencegah suara ganda yang
-        # dipicu berulang kali dalam waktu sangat dekat (mis. setiap frame).
         if berbunyi and kini - self._waktu_putar_terakhir < JEDA_ANTAR_PUTARAN_DETIK:
             return None
 
         if berbunyi and prioritas <= self._prioritas_aktif:
             return None
 
-        # Jika kunci yang sama masih sedang diputar, jangan putar ulang kecuali
-        # prioritas baru lebih tinggi (interupsi berani).
         kunci_baru = r["kunci"]
         if self._kunci_sedang_diputar == kunci_baru and not (
             berbunyi and prioritas > self._prioritas_aktif

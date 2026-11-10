@@ -1,6 +1,6 @@
 import ProfileMenu from "./ProfileMenu";
 
-export default function Navbar({ device, position }) {
+export default function Navbar({ device, position, telemetry, telemetryOnline }) {
   return (
     <nav className="relative flex flex-wrap items-center justify-between px-0 py-2 mx-6 transition-all ease-in shadow-none duration-250 rounded-2xl lg:flex-nowrap lg:justify-start">
       <div className="flex items-center justify-between w-full px-4 py-1 mx-auto flex-wrap-inherit">
@@ -16,7 +16,12 @@ export default function Navbar({ device, position }) {
         <div className="flex items-center mt-2 grow sm:mt-0 sm:mr-6 md:mr-0 lg:flex lg:basis-auto">
           <div className="md:ml-auto"></div>
           <ul className="flex flex-row items-center justify-end pl-0 mb-0 list-none md-max:w-full">
-            <ProfileMenu device={device} position={position} />
+            <ProfileMenu
+              device={device}
+              position={position}
+              telemetry={telemetry}
+              telemetryOnline={telemetryOnline}
+            />
           </ul>
         </div>
       </div>

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import hmac
@@ -11,6 +12,7 @@ import subprocess
 import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -21,9 +23,19 @@ import urllib.parse
 from urllib.request import Request as UrlRequest, urlopen
 
 import numpy as np
-from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from PIL import Image
@@ -58,15 +70,38 @@ load_project_env()
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
-SUPABASE_DEVICE_ID = os.environ.get(
-    "VEST_SUPABASE_DEVICE_ID",
-    str(uuid.uuid5(uuid.NAMESPACE_URL, "vestcare-server-device")),
-).strip()
+SUPABASE_DEVICE_ID_ENV = os.environ.get("VEST_SUPABASE_DEVICE_ID", "").strip()
+SUPABASE_DEVICE_FALLBACK = str(uuid.uuid5(uuid.NAMESPACE_URL, "vestcare-server-device"))
+SUPABASE_DEVICE_ID = SUPABASE_DEVICE_ID_ENV or SUPABASE_DEVICE_FALLBACK
 SUPABASE_SYNC_LOCK = threading.Lock()
 SUPABASE_LAST_SIGNATURE = ""
 SUPABASE_LAST_SAVED_AT = 0.0
 SUPABASE_CONNECTED = False
 SUPABASE_CONNECTION_ERROR: Optional[str] = None
+
+LATEST_TELEMETRI_LOCK = threading.Lock()
+LATEST_TELEMETRI: dict[str, Any] = {
+    "jarak": None,
+    "valid_jarak": False,
+    "lat": None,
+    "lng": None,
+    "alt": None,
+    "spd": None,
+    "sat": 0,
+    "hdop": None,
+    "fix": False,
+    "terbaca": False,
+    "waktu": None,
+    "battery": None,
+    "updated_at": 0.0,
+}
+LATEST_GPS_LOG_AT = 0.0
+LAST_DEVICE_UPDATE_AT = 0.0
+
+# Jejak posisi Wemos selama server hidup. Dipakai peta Google Maps untuk
+# menggambar garis perjalanan tanpa harus menunggu data Supabase.
+TELEMETRI_JALUR_LOCK = threading.Lock()
+TELEMETRI_JALUR: deque[dict[str, Any]] = deque(maxlen=300)
 
 
 def api_key_is_configured(value: Optional[str]) -> bool:
@@ -82,8 +117,8 @@ DEFAULT_CONF = 0.35
 DEFAULT_CONF_RAGU = 0.50
 DEFAULT_IMGSZ = 512
 
-from fuzzysugeno import KELAS_ID_KE_NAMA, PelacakGerak, analisis_hasil, validasi_nama_kelas  # noqa: E402
-from ultralytics import YOLO  # noqa: E402
+from fuzzysugeno import KELAS_ID_KE_NAMA, PelacakGerak, analisis_hasil, validasi_nama_kelas
+from ultralytics import YOLO
 
 
 @dataclass
@@ -352,6 +387,13 @@ RIWAYAT_PATH = _project_path(os.environ.get("VEST_RIWAYAT_PATH", ROOT / "data" /
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 HOST = os.environ.get("VEST_HOST", "127.0.0.1")
 PORT = int(os.environ.get("VEST_PORT", "8080"))
+GOOGLE_MAPS_API_KEY = (
+    os.environ.get("GOOGLE_MAPS_API_KEY", "")
+    or os.environ.get("VITE_GOOGLE_MAPS_API_KEY", "")
+).strip()
+MAP_DEFAULT_LAT = float(os.environ.get("VEST_MAP_DEFAULT_LAT", "-8.1689"))
+MAP_DEFAULT_LNG = float(os.environ.get("VEST_MAP_DEFAULT_LNG", "113.7020"))
+MAP_DEFAULT_ZOOM = int(os.environ.get("VEST_MAP_ZOOM", "17"))
 
 RIWAYAT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -383,7 +425,7 @@ try:
         conf_ragu=CONF_RAGU,
     )
     print(f"[API] Engine inferensi siap. Model: {MODEL_PATH}")
-except Exception as e:  # server tetap bisa start & /docs bisa dibuka buat debug
+except Exception as e:
     ENGINE_ERROR = str(e)
     print(f"[PERINGATAN] Engine belum siap: {ENGINE_ERROR}")
     print("  /deteksi akan menolak request sampai engine berhasil dimuat.")
@@ -479,6 +521,13 @@ def _pastikan_engine_siap() -> InferensiVest:
 
 
 def _simpan_riwayat(hasil_dict: dict, sumber: str):
+    with LATEST_TELEMETRI_LOCK:
+        tele = dict(LATEST_TELEMETRI)
+    if "posisi" not in hasil_dict and tele.get("fix") and tele.get("lat") is not None and tele.get("lng") is not None:
+        hasil_dict["posisi"] = {
+            "lat": tele["lat"],
+            "lng": tele["lng"],
+        }
     entri = {
         "id": uuid.uuid4().hex[:12],
         "waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -498,34 +547,91 @@ def _simpan_riwayat(hasil_dict: dict, sumber: str):
     return entri
 
 
+def _ambil_perangkat_supabase(device_id: Optional[str] = None) -> Optional[dict[str, Any]]:
+    query = {"select": "id,name", "limit": "1"}
+    if device_id:
+        query["id"] = f"eq.{device_id}"
+    else:
+        query["order"] = "created_at.asc"
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+    }
+    request = UrlRequest(
+        f"{SUPABASE_URL}/rest/v1/devices?{urllib.parse.urlencode(query)}",
+        headers=headers,
+    )
+    rows = None
+    last_error: Optional[Exception] = None
+    for attempt in range(3):
+        try:
+            with urlopen(request, timeout=10) as response:
+                rows = json.loads(response.read().decode("utf-8"))
+            break
+        except HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace").strip()
+            raise RuntimeError(
+                f"Supabase devices mengembalikan HTTP {error.code}: {detail or error.reason}"
+            ) from error
+        except (URLError, json.JSONDecodeError, TimeoutError, OSError) as error:
+            last_error = error
+            if attempt < 2:
+                time.sleep(1.5)
+    else:
+        raise RuntimeError(f"Gagal membaca Supabase devices: {last_error}") from last_error
+    if not isinstance(rows, list):
+        raise RuntimeError("Supabase mengembalikan format devices yang tidak valid.")
+    return rows[0] if rows else None
+
+
 def _hubungkan_perangkat_supabase() -> str:
+    global SUPABASE_DEVICE_ID
+
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         raise RuntimeError(
             "Atur SUPABASE_URL dan SUPABASE_SERVICE_ROLE_KEY di .env server."
         )
-    try:
-        device_id = str(uuid.UUID(SUPABASE_DEVICE_ID))
-    except ValueError as error:
-        raise ValueError("VEST_SUPABASE_DEVICE_ID harus berupa UUID yang valid.") from error
+
+    if SUPABASE_DEVICE_ID_ENV:
+        try:
+            device_id = str(uuid.UUID(SUPABASE_DEVICE_ID_ENV))
+        except ValueError as error:
+            raise ValueError("VEST_SUPABASE_DEVICE_ID harus berupa UUID yang valid.") from error
+        existing = _ambil_perangkat_supabase(device_id)
+    else:
+        existing = _ambil_perangkat_supabase()
+        device_id = str(existing["id"]) if existing and existing.get("id") else SUPABASE_DEVICE_FALLBACK
 
     created_at = datetime.now().astimezone().isoformat()
-    request = UrlRequest(
-        f"{SUPABASE_URL}/rest/v1/devices?on_conflict=id",
-        data=json.dumps([{
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    if existing:
+        path = f"devices?id=eq.{urllib.parse.quote(device_id, safe='')}"
+        body = json.dumps({"online": True, "last_seen": created_at}).encode("utf-8")
+        method = "PATCH"
+        prefer = "return=minimal"
+    else:
+        path = "devices?on_conflict=id"
+        body = json.dumps([{
             "id": device_id,
             "name": "VestCare Server",
             "student_name": "Perangkat sementara",
             "school": "Server VestCare",
             "online": True,
             "last_seen": created_at,
-        }]).encode("utf-8"),
-        headers={
-            "apikey": SUPABASE_SERVICE_ROLE_KEY,
-            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
-            "Content-Type": "application/json",
-            "Prefer": "resolution=merge-duplicates,return=minimal",
-        },
-        method="POST",
+        }]).encode("utf-8")
+        method = "POST"
+        prefer = "resolution=merge-duplicates,return=minimal"
+
+    request = UrlRequest(
+        f"{SUPABASE_URL}/rest/v1/{path}",
+        data=body,
+        headers={**headers, "Prefer": prefer},
+        method=method,
     )
     try:
         with urlopen(request, timeout=8) as response:
@@ -539,6 +645,8 @@ def _hubungkan_perangkat_supabase() -> str:
     except URLError as error:
         reason = getattr(error, "reason", error)
         raise RuntimeError(f"Gagal menghubungi Supabase devices: {reason}") from error
+
+    SUPABASE_DEVICE_ID = device_id
     return device_id
 
 
@@ -622,7 +730,7 @@ def _simpan_deteksi_supabase(entri: dict) -> dict[str, Any]:
         if item.get("ragu"):
             continue
         object_name = str(item.get("kelas", item.get("object", ""))).strip().lower()
-        if not object_name:
+        if not object_name or object_name not in KELAS_ID_KE_NAMA.values():
             continue
         current = latest_by_object.get(object_name)
         if current is None or float(item.get("urgensi", 0) or 0) > float(current.get("urgensi", 0) or 0):
@@ -670,7 +778,8 @@ def _simpan_deteksi_supabase(entri: dict) -> dict[str, Any]:
                 reason = getattr(error, "reason", error)
                 raise RuntimeError(f"Gagal menghubungi Supabase {path}: {reason}") from error
 
-        _hubungkan_perangkat_supabase()
+        if not SUPABASE_CONNECTED:
+            _hubungkan_perangkat_supabase()
         SUPABASE_CONNECTED = True
         SUPABASE_CONNECTION_ERROR = None
 
@@ -722,7 +831,7 @@ def _simpan_deteksi_supabase(entri: dict) -> dict[str, Any]:
                 request_supabase(
                     f"detections?id=eq.{urllib.parse.quote(existing_id, safe='')}&device_id=eq.{device_id}",
                     "PATCH",
-                    [row],
+                    row,
                 )
                 latest_id_by_object.pop(row["object"].lower())
 
@@ -740,6 +849,66 @@ def _simpan_deteksi_supabase(entri: dict) -> dict[str, Any]:
         return {"supabase_tersimpan": True, "supabase_jumlah": len(rows)}
 
 
+def _sinkronisasi_telemetri_supabase(data: dict) -> None:
+    global LATEST_GPS_LOG_AT, LAST_DEVICE_UPDATE_AT
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        return
+
+    now = time.time()
+    try:
+        device_id = str(uuid.UUID(SUPABASE_DEVICE_ID))
+    except (ValueError, TypeError):
+        return
+
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    if now - LAST_DEVICE_UPDATE_AT >= 15.0:
+        LAST_DEVICE_UPDATE_AT = now
+        payload_device: dict[str, Any] = {
+            "online": True,
+            "last_seen": datetime.now().astimezone().isoformat(),
+        }
+        if data.get("battery") is not None:
+            payload_device["battery"] = data["battery"]
+        req_dev = UrlRequest(
+            f"{SUPABASE_URL}/rest/v1/devices?id=eq.{urllib.parse.quote(device_id, safe='')}",
+            data=json.dumps(payload_device).encode("utf-8"),
+            headers={**headers, "Prefer": "return=minimal"},
+            method="PATCH",
+        )
+        try:
+            with urlopen(req_dev, timeout=5):
+                pass
+        except Exception:
+            pass
+
+    if data.get("fix") and data.get("lat") is not None and data.get("lng") is not None:
+        if now - LATEST_GPS_LOG_AT >= 5.0:
+            LATEST_GPS_LOG_AT = now
+            payload_gps = [{
+                "device_id": device_id,
+                "lat": float(data["lat"]),
+                "lng": float(data["lng"]),
+                "accuracy": float(data.get("hdop") or 1.0),
+                "created_at": datetime.now().astimezone().isoformat(),
+            }]
+            req_gps = UrlRequest(
+                f"{SUPABASE_URL}/rest/v1/gps_log",
+                data=json.dumps(payload_gps).encode("utf-8"),
+                headers={**headers, "Prefer": "return=minimal"},
+                method="POST",
+            )
+            try:
+                with urlopen(req_gps, timeout=5):
+                    pass
+            except Exception:
+                pass
+
+
 def _baca_riwayat(limit: int):
     if not RIWAYAT_PATH.exists():
         return {"total": 0, "data": []}
@@ -747,6 +916,50 @@ def _baca_riwayat(limit: int):
         baris = [json.loads(l) for l in f if l.strip()]
     terbaru = list(reversed(baris))[:limit]
     return {"total": len(baris), "ditampilkan": len(terbaru), "data": terbaru}
+
+
+def _catat_jalur(data: dict) -> None:
+    """Simpan titik GPS baru agar peta bisa menggambar jejak perjalanan."""
+    if not data.get("fix") or data.get("lat") is None or data.get("lng") is None:
+        return
+    try:
+        lat = float(data["lat"])
+        lng = float(data["lng"])
+    except (TypeError, ValueError):
+        return
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+        return
+    with TELEMETRI_JALUR_LOCK:
+        if TELEMETRI_JALUR:
+            terakhir = TELEMETRI_JALUR[-1]
+            if abs(float(terakhir["lat"]) - lat) < 1e-6 and abs(float(terakhir["lng"]) - lng) < 1e-6:
+                return
+        TELEMETRI_JALUR.append({
+            "lat": lat,
+            "lng": lng,
+            "spd": data.get("spd"),
+            "alt": data.get("alt"),
+            "waktu": data.get("waktu"),
+            "updated_at": data.get("updated_at"),
+        })
+
+
+def _salin_jalur() -> list[dict[str, Any]]:
+    with TELEMETRI_JALUR_LOCK:
+        return [dict(titik) for titik in TELEMETRI_JALUR]
+
+
+def _ringkasan_telemetri(data: dict) -> dict[str, Any]:
+    now = time.time()
+    updated_at = float(data.get("updated_at") or 0)
+    umur = max(0.0, now - updated_at) if updated_at else None
+    return {
+        "telemetri": data,
+        "jalur": _salin_jalur(),
+        "online": umur is not None and umur < 15.0,
+        "umur_detik": round(umur, 1) if umur is not None else None,
+        "waktu_server": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
 
 
 def _alamat_ngrok_aktif(port: int) -> Optional[str]:
@@ -903,11 +1116,24 @@ async def hubungkan_supabase_saat_server_mulai():
     try:
         device_id = await run_in_threadpool(_hubungkan_perangkat_supabase)
         removed = await run_in_threadpool(_deduplikasi_deteksi_supabase, device_id)
-    except (RuntimeError, ValueError) as error:
+    except ValueError as error:
         SUPABASE_CONNECTED = False
         SUPABASE_CONNECTION_ERROR = str(error)
-        print(f"[SUPABASE] Koneksi saat startup gagal: {SUPABASE_CONNECTION_ERROR}")
+        print(f"[SUPABASE] Konfigurasi tidak valid: {SUPABASE_CONNECTION_ERROR}")
         return
+    except RuntimeError:
+        for attempt in range(3):
+            try:
+                await run_in_threadpool(time.sleep, 2)
+                device_id = await run_in_threadpool(_hubungkan_perangkat_supabase)
+                removed = await run_in_threadpool(_deduplikasi_deteksi_supabase, device_id)
+                break
+            except RuntimeError as error:
+                if attempt == 2:
+                    SUPABASE_CONNECTED = False
+                    SUPABASE_CONNECTION_ERROR = str(error)
+                    print(f"[SUPABASE] Koneksi saat startup gagal: {SUPABASE_CONNECTION_ERROR}")
+                    return
 
     SUPABASE_CONNECTED = True
     SUPABASE_CONNECTION_ERROR = None
@@ -917,54 +1143,216 @@ async def hubungkan_supabase_saat_server_mulai():
     )
 
 
+class MasukanTelemetri(BaseModel):
+    jarak: Optional[float] = Field(None, description="jarak ultrasonik dalam meter")
+    valid_jarak: Optional[bool] = Field(None, description="apakah pembacaan ultrasonik valid")
+    lat: Optional[float] = Field(None, ge=-90, le=90, description="latitude dari GPS dalam derajat")
+    lng: Optional[float] = Field(None, ge=-180, le=180, description="longitude dari GPS dalam derajat")
+    alt: Optional[float] = Field(None, description="ketinggian (meter)")
+    spd: Optional[float] = Field(None, description="kecepatan (km/jam)")
+    sat: Optional[int] = Field(None, description="jumlah satelit terkunci")
+    hdop: Optional[float] = Field(None, description="horizontal dilution of precision")
+    fix: Optional[bool] = Field(None, description="apakah GPS fix lock valid")
+    terbaca: Optional[bool] = Field(None, description="apakah modul GPS merespon")
+    waktu: Optional[str] = Field(None, description="waktu GPS")
+    battery: Optional[float] = Field(None, description="persentase baterai")
+
+
+@app.post("/telemetri")
+@app.post("/api/telemetri")
+async def telemetri_masuk(
+    m: MasukanTelemetri,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_api_key: Optional[str] = Header(None),
+):
+    if API_KEY_CONFIGURED:
+        _cek_api_key(request, x_api_key)
+
+    global LATEST_TELEMETRI
+    now = time.time()
+    gps_fix = bool(m.fix and m.lat is not None and m.lng is not None)
+    update_data = {
+        "jarak": float(m.jarak) if m.jarak is not None and m.valid_jarak else None,
+        "valid_jarak": bool(m.valid_jarak),
+        "lat": float(m.lat) if gps_fix else None,
+        "lng": float(m.lng) if gps_fix else None,
+        "alt": float(m.alt) if m.alt is not None else None,
+        "spd": float(m.spd) if m.spd is not None else None,
+        "sat": int(m.sat or 0),
+        "hdop": float(m.hdop or 0.0),
+        "fix": gps_fix,
+        "terbaca": bool(m.terbaca),
+        "waktu": m.waktu or datetime.now().strftime("%H:%M:%S"),
+        "battery": m.battery,
+        "updated_at": now,
+    }
+    with LATEST_TELEMETRI_LOCK:
+        LATEST_TELEMETRI.update(update_data)
+    _catat_jalur(update_data)
+
+    if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
+        background_tasks.add_task(_sinkronisasi_telemetri_supabase, update_data)
+
+    return {
+        "status": "ok",
+        "pesan": "Telemetri diterima",
+        "waktu_server": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "gps_fix": gps_fix,
+        "jarak_sensor": m.jarak if m.valid_jarak else None,
+    }
+
+
+@app.get("/telemetri")
+@app.get("/api/telemetri")
+def telemetri_status(request: Request, x_api_key: Optional[str] = Header(None)):
+    with LATEST_TELEMETRI_LOCK:
+        data = dict(LATEST_TELEMETRI)
+    return _ringkasan_telemetri(data)
+
+
+@app.get("/telemetri/stream", include_in_schema=False)
+@app.get("/api/telemetri/stream", include_in_schema=False)
+async def telemetri_stream(
+    request: Request,
+    x_api_key: Optional[str] = Header(None),
+    api_key: Optional[str] = Query(None, description="API key untuk klien non-browser"),
+):
+    """Server-Sent Events: dorong telemetri Wemos ke dashboard seketika."""
+    if API_KEY_CONFIGURED:
+        _cek_api_key(request, x_api_key or api_key)
+
+    async def peristiwa():
+        signature_terakhir: Optional[tuple] = None
+        kirim_terakhir = 0.0
+        detak_terakhir = 0.0
+        while True:
+            if await request.is_disconnected():
+                break
+            with LATEST_TELEMETRI_LOCK:
+                data = dict(LATEST_TELEMETRI)
+            sekarang = time.time()
+            jalur = _salin_jalur()
+            signature = (
+                data.get("updated_at"),
+                data.get("battery"),
+                data.get("fix"),
+                data.get("lat"),
+                data.get("lng"),
+                len(jalur),
+            )
+            if signature != signature_terakhir or sekarang - kirim_terakhir >= 5.0:
+                payload = _ringkasan_telemetri(data)
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                signature_terakhir = signature
+                kirim_terakhir = sekarang
+            elif sekarang - detak_terakhir >= 15.0:
+                yield ": keep-alive\n\n"
+                detak_terakhir = sekarang
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(
+        peristiwa(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/config")
+def konfigurasi_publik():
+    """Konfigurasi publik dashboard (kunci Google Maps memang kunci browser)."""
+    return {
+        "versi": "2.0.0",
+        "google_maps_api_key": GOOGLE_MAPS_API_KEY,
+        "map_default_center": {"lat": MAP_DEFAULT_LAT, "lng": MAP_DEFAULT_LNG},
+        "map_zoom": MAP_DEFAULT_ZOOM,
+        "telemetri_stream": "/api/telemetri/stream",
+        "telemetri_poll_ms": 1000,
+        "dashboard_poll_ms": 10000,
+    }
+
+
 @app.get("/dashboard/data")
 def dashboard_data(request: Request, x_api_key: Optional[str] = Header(None)):
     _cek_api_key(request, x_api_key)
-    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-        raise HTTPException(status_code=503, detail="Sinkronisasi Supabase belum dikonfigurasi.")
+    with LATEST_TELEMETRI_LOCK:
+        live_telemetri = dict(LATEST_TELEMETRI)
+    is_live_online = (time.time() - live_telemetri.get("updated_at", 0)) < 15.0
+
     try:
         device_id = str(uuid.UUID(SUPABASE_DEVICE_ID))
-    except ValueError as error:
-        raise HTTPException(status_code=500, detail="ID perangkat Supabase tidak valid.") from error
+    except (ValueError, TypeError):
+        device_id = SUPABASE_DEVICE_FALLBACK
 
-    headers = {
-        "apikey": SUPABASE_SERVICE_ROLE_KEY,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+    device_rows = []
+    detections = []
+    gps_rows = []
+
+    if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
+        headers = {
+            "apikey": SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        }
+
+        def baca_tabel(path: str) -> list[dict[str, Any]]:
+            url = f"{SUPABASE_URL}/rest/v1/{path}"
+            try:
+                with urlopen(UrlRequest(url, headers=headers), timeout=8) as response:
+                    data = json.loads(response.read().decode("utf-8"))
+            except Exception:
+                return []
+            return data if isinstance(data, list) else []
+
+        device_rows = baca_tabel(
+            f"devices?id=eq.{device_id}&select=id,name,student_name,school,battery,online,last_seen&limit=1"
+        )
+        detections = baca_tabel(
+            f"detections?device_id=eq.{device_id}"
+            "&select=id,device_id,object,distance_m,confidence,urgency,lat,lng,urgency_score,created_at"
+            "&order=created_at.desc,urgency_score.desc&limit=100"
+        )
+        gps_rows = baca_tabel(
+            f"gps_log?device_id=eq.{device_id}"
+            "&select=id,device_id,lat,lng,accuracy,created_at&order=created_at.desc&limit=1"
+        )
+
+    device_result = device_rows[0] if device_rows else {
+        "id": device_id,
+        "name": "VestCare Rompi",
+        "student_name": "Siswa VestCare",
+        "school": "VestCare",
+        "battery": live_telemetri.get("battery"),
+        "online": is_live_online,
+        "last_seen": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
+    if is_live_online:
+        device_result["online"] = True
+        if live_telemetri.get("battery") is not None:
+            device_result["battery"] = live_telemetri["battery"]
 
-    def baca_tabel(path: str) -> list[dict[str, Any]]:
-        url = f"{SUPABASE_URL}/rest/v1/{path}"
-        try:
-            with urlopen(UrlRequest(url, headers=headers), timeout=8) as response:
-                data = json.loads(response.read().decode("utf-8"))
-        except HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace").strip()
-            raise HTTPException(
-                status_code=502,
-                detail=f"Supabase menolak pembacaan dashboard (HTTP {error.code}): {detail or error.reason}",
-            ) from error
-        except (URLError, json.JSONDecodeError) as error:
-            raise HTTPException(status_code=502, detail=f"Gagal membaca Supabase untuk dashboard: {error}") from error
-        if not isinstance(data, list):
-            raise HTTPException(status_code=502, detail="Supabase mengembalikan format data dashboard yang tidak valid.")
-        return data
+    gps_result = gps_rows[0] if gps_rows and not is_live_online else None
+    if live_telemetri.get("fix") and live_telemetri.get("lat") is not None and live_telemetri.get("lng") is not None:
+        gps_result = {
+            "id": "live-wemos",
+            "device_id": device_id,
+            "lat": live_telemetri["lat"],
+            "lng": live_telemetri["lng"],
+            "accuracy": live_telemetri.get("hdop", 1.0),
+            "created_at": datetime.now().astimezone().isoformat(),
+        }
 
-    device_rows = baca_tabel(
-        f"devices?id=eq.{device_id}&select=id,name,student_name,school,battery,online,last_seen&limit=1"
-    )
-    detections = baca_tabel(
-        f"detections?device_id=eq.{device_id}"
-        "&select=id,device_id,object,distance_m,confidence,urgency,lat,lng,urgency_score,created_at"
-        "&order=created_at.desc,urgency_score.desc&limit=100"
-    )
-    gps_rows = baca_tabel(
-        f"gps_log?device_id=eq.{device_id}"
-        "&select=id,device_id,lat,lng,accuracy,created_at&order=created_at.desc&limit=1"
-    )
     return {
-        "device": device_rows[0] if device_rows else None,
+        "device": device_result,
         "detections": detections,
-        "gps": gps_rows[0] if gps_rows else None,
+        "gps": gps_result,
+        "telemetri": live_telemetri,
+        "jalur": _salin_jalur(),
+        "telemetri_online": is_live_online,
+        "waktu_server": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
 
@@ -976,11 +1364,22 @@ async def deteksi(
     x_api_key: Optional[str] = Header(None),
 ):
     _cek_api_key(request, x_api_key)
+    with LATEST_TELEMETRI_LOCK:
+        tele = dict(LATEST_TELEMETRI)
+    if jarak_m is None and tele.get("valid_jarak") and tele.get("jarak") is not None:
+        if (time.time() - tele.get("updated_at", 0)) < 5.0:
+            jarak_m = float(tele["jarak"])
+
     img = await _baca_gambar(gambar)
 
     hasil = await run_in_threadpool(_jalankan_deteksi, img, jarak_m)
     data = InferensiVest.ke_dict(hasil)
     data["suara"] = _rencana_suara(data)
+    if tele.get("fix") and tele.get("lat") is not None and tele.get("lng") is not None:
+        data["posisi"] = {
+            "lat": tele["lat"],
+            "lng": tele["lng"],
+        }
     entri = await run_in_threadpool(_simpan_riwayat, data, "deteksi")
     return JSONResponse(entri)
 
@@ -993,11 +1392,22 @@ async def deteksi_suara(
     x_api_key: Optional[str] = Header(None),
 ):
     _cek_api_key(request, x_api_key)
+    with LATEST_TELEMETRI_LOCK:
+        tele = dict(LATEST_TELEMETRI)
+    if jarak_m is None and tele.get("valid_jarak") and tele.get("jarak") is not None:
+        if (time.time() - tele.get("updated_at", 0)) < 5.0:
+            jarak_m = float(tele["jarak"])
+
     img = await _baca_gambar(gambar)
 
     hasil = await run_in_threadpool(_jalankan_deteksi, img, jarak_m)
     data = InferensiVest.ke_dict(hasil)
     data["suara"] = _rencana_suara(data)
+    if tele.get("fix") and tele.get("lat") is not None and tele.get("lng") is not None:
+        data["posisi"] = {
+            "lat": tele["lat"],
+            "lng": tele["lng"],
+        }
     entri = await run_in_threadpool(_simpan_riwayat, data, "deteksi_suara")
     return JSONResponse(entri)
 
@@ -1040,8 +1450,6 @@ if __name__ == "__main__":
         raise SystemExit(f"Engine deteksi gagal dimuat: {ENGINE_ERROR}")
 
     executable = shutil.which(os.environ.get("NGROK_EXECUTABLE", "ngrok"))
-    if executable is None:
-        raise SystemExit("ngrok tidak ditemukan. Install ngrok dan pastikan tersedia di PATH.")
 
     server = None
     server_thread = None
@@ -1063,8 +1471,8 @@ if __name__ == "__main__":
 
     tunnel = None
     try:
-        public_url = _alamat_ngrok_aktif(PORT)
-        if public_url is None:
+        public_url = _alamat_ngrok_aktif(PORT) if executable else None
+        if public_url is None and executable is not None:
             tunnel = subprocess.Popen(
                 [executable, "http", f"http://127.0.0.1:{PORT}"],
                 cwd=ROOT,
@@ -1073,29 +1481,43 @@ if __name__ == "__main__":
             url_deadline = time.monotonic() + 60
             while time.monotonic() < url_deadline:
                 if tunnel.poll() is not None:
-                    raise SystemExit(f"ngrok berhenti dengan kode {tunnel.returncode}.")
+                    print(f"[WARN] ngrok berhenti dengan kode {tunnel.returncode}.")
+                    break
                 public_url = _alamat_ngrok_aktif(PORT)
                 if public_url:
                     break
                 time.sleep(0.5)
-            if public_url is None:
-                raise SystemExit(
-                    "Alamat HTTPS ngrok tidak tersedia. Periksa authtoken ngrok dan koneksi internet."
-                )
 
-        path_url = _simpan_url_publik(public_url)
-        print(f"[INFO] Dashboard publik : {public_url}")
-        print(f"[INFO] Dashboard lokal  : http://127.0.0.1:{PORT}")
-        print(f"[INFO] Dokumentasi API  : {public_url}/docs")
-        print(f"[INFO] URL disimpan di  : {path_url}")
-
-        if server_thread is None and tunnel is None:
-            print("[INFO] Server dan tunnel sudah berjalan di proses lain; tidak ada yang perlu dijaga.")
+        if public_url is None:
+            if executable is None:
+                print("[WARN] ngrok tidak ditemukan; server lokal tetap berjalan tanpa URL publik.")
+            else:
+                print("[WARN] Alamat HTTPS ngrok tidak tersedia; server lokal tetap berjalan.")
+            if tunnel is not None and tunnel.poll() is None:
+                tunnel.terminate()
+                try:
+                    tunnel.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    tunnel.kill()
+                    tunnel.wait()
+            tunnel = None
         else:
-            while (server_thread is None or server_thread.is_alive()) and (
-                tunnel is None or tunnel.poll() is None
-            ):
-                time.sleep(0.5)
+            path_url = _simpan_url_publik(public_url)
+            print(f"[INFO] Dashboard publik : {public_url}")
+            print(f"[INFO] Dokumentasi API  : {public_url}/docs")
+            print(f"[INFO] URL disimpan di  : {path_url}")
+
+        print(f"[INFO] Dashboard lokal  : http://127.0.0.1:{PORT}")
+
+        while True:
+            server_alive = server_thread is not None and server_thread.is_alive()
+            tunnel_alive = tunnel is not None and tunnel.poll() is None
+            if not server_alive and not tunnel_alive:
+                break
+            if tunnel is not None and not tunnel_alive:
+                print("[WARN] Proses tunnel berhenti; server lokal tetap berjalan.")
+                tunnel = None
+            time.sleep(0.5)
     except KeyboardInterrupt:
         pass
     finally:

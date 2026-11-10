@@ -2,7 +2,7 @@
   <img src="assets/vestcare-title.svg" alt="VestCare - Rompi Cerdas (Stage 2)" width="900">
 </p>
 
-Sistem peringatan rintangan untuk rompi cerdas berbasis segmentasi YOLO26n, logika fuzzy Sugeno, dan suara natural Bahasa Indonesia. Model mendeteksi lima kelas, yaitu pohon, mobil, motor, orang, dan lubang. Hasil deteksi dipetakan menjadi arah, jarak, tingkat risiko, instruksi suara, serta riwayat perangkat pada Supabase.
+Sistem peringatan rintangan untuk rompi cerdas berbasis segmentasi YOLO26n, logika fuzzy Sugeno, dan suara natural Bahasa Indonesia. Model mendeteksi lima kelas, yaitu pohon, mobil, motor, orang, dan lubang. Hasil deteksi dipetakan menjadi arah, jarak, tingkat risiko, instruksi suara, serta riwayat perangkat pada Supabase. Dashboard menampilkan posisi, jarak ultrasonik, dan telemetri GPS Wemos secara realtime pada peta Google Maps.
 
 ## Ringkasan sistem
 
@@ -42,6 +42,35 @@ runs/segment/runs/semua_kelas_yolo26n_20261107_154452/
 | Overlap train dan validasi | 0 gambar |
 | Waktu training | 29.825,4 detik atau sekitar 8,28 jam |
 | Checkpoint terbaik | `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/weights/best.pt` |
+
+### Hyperparameter lengkap run
+
+Nilai berikut berasal dari `args.yaml` run tersebut dan konfigurasi yang diberikan oleh `train_semua.py`.
+
+| Kelompok | Parameter | Nilai |
+|---|---|---|
+| Reproduksibilitas | Seed split / training | `0` / `0` |
+| Reproduksibilitas | Deterministic | `True` |
+| Reproduksibilitas | Cache / AMP | `False` / `True` |
+| Eksekusi | Task / pretrained | Segmentasi / `True` |
+| Eksekusi | Epoch maksimum / patience | `100` / `50` |
+| Eksekusi | Batch / image size | `4` / `512` |
+| Eksekusi | Device / workers | GPU `0` / `0` |
+| Optimisasi | Optimizer | `AdamW` |
+| Optimisasi | `lr0` / `lrf` | `0.001` / `0.01` |
+| Optimisasi | Momentum / weight decay | `0.937` / `0.0005` |
+| Optimisasi | Label smoothing | `0.1` |
+| Warmup | Epoch / momentum / bias LR | `3.0` / `0.8` / `0.1` |
+| Loss | Box / cls / DFL | `7.5` / `0.5` / `1.5` |
+| Augmentasi warna | HSV H / S / V | `0.015` / `0.7` / `0.4` |
+| Augmentasi geometri | Degrees / translate / scale | `10` / `0.1` / `0.5` |
+| Augmentasi geometri | Shear / perspective | `0` / `0` |
+| Flip | Horizontal / vertikal | `0.5` / `0` |
+| Augmentasi gambar | Mosaic / mixup | `1.0` / `0` |
+| Augmentasi gambar | Cutmix / copy-paste / erasing | `0` / `0` / `0.4` |
+| Training | Close mosaic / nominal batch size | `10` epoch terakhir / `64` |
+| Evaluasi | Split / IoU / max detections | `val` / `0.7` / `300` |
+| Quality gate | Target precision dan mAP50 tiap kelas | `98%`; run belum lulus |
 
 ### Split dataset dan seed
 
@@ -371,13 +400,13 @@ Jika klip gerak belum tersedia, sistem memakai fallback `benda_{kelas}_{arah}_ne
 6. Respons berisi daftar deteksi, level tertinggi, urgensi, status ragu, dan rencana suara.
 7. Server menulis riwayat ke `data/riwayat.jsonl`.
 8. Server menyinkronkan deteksi ke Supabase melalui REST API dengan service-role key.
-9. Saat startup, server membuat atau memperbarui perangkat virtual `VestCare Server` pada tabel `devices`.
+9. Saat startup, server memakai perangkat yang sudah tercatat di tabel `devices` (atau `VEST_SUPABASE_DEVICE_ID` bila diisi); perangkat baru hanya dibuat jika belum ada.
 10. Untuk setiap frame, server mengambil baris terakhir per objek, memperbarui baris yang sudah ada dengan `PATCH`, menambah baris baru dengan `POST`, dan menghapus duplikat dengan `DELETE`.
 11. Semua objek dalam satu frame memakai `created_at` yang sama sehingga dapat dikelompokkan sebagai satu batch.
 12. Frame dengan signature objek, level, dan arah yang sama dilewati selama 10 detik untuk mencegah duplikasi.
-13. Dashboard membaca `devices`, `detections`, dan `gps_log` memakai `@supabase/supabase-js` dan publishable atau anon key.
-14. Jika perangkat belum terlihat atau Supabase belum lengkap, dashboard memakai fallback `GET /status`, `GET /dashboard/data`, dan `GET /riwayat`.
-15. Dashboard memuat ulang data setiap 10 detik. Hasil kamera terbaru langsung memperbarui tampilan tanpa menunggu polling.
+13. Dashboard membaca `devices`, `detections`, dan `gps_log` melalui `GET /dashboard/data`. Server memakai service-role key dan cookie sesi HttpOnly, sehingga kunci rahasia tidak pernah masuk ke browser.
+14. Jika Supabase belum lengkap atau sedang offline, dashboard memakai fallback `GET /riwayat`.
+15. Dashboard memuat ulang perangkat dan riwayat setiap 10 detik, sedangkan telemetri Wemos didorong lewat SSE `GET /api/telemetri/stream` setiap kali alat mengirim data (atau polling 1 detik bila SSE terputus). Hasil kamera terbaru langsung memperbarui tampilan tanpa menunggu polling.
 
 ### Tabel alur data
 
@@ -389,8 +418,8 @@ Jika klip gerak belum tersedia, sistem memakai fallback `benda_{kelas}_{arah}_ne
 | Suara | `PerencanaSuara` | Daftar deteksi | Rencana segmen dan teks | Memori server |
 | Riwayat lokal | `_simpan_riwayat` | Hasil deteksi | Baris JSONL | `data/riwayat.jsonl` |
 | Sinkronisasi | `_simpan_deteksi_supabase` | Hasil deteksi | Baris `detections` | Supabase REST |
-| Baca web | `useVestData.js` | Tabel Supabase | State dashboard | `supabase-js` |
-| Fallback web | FastAPI | Perangkat atau Supabase kosong | Data dashboard | `/dashboard/data`, `/riwayat` |
+| Baca web | `useVestData.js` | `GET /dashboard/data`, SSE `/api/telemetri/stream`, `GET /riwayat` | State dashboard realtime | HTTP same-origin + cookie sesi |
+| Fallback web | FastAPI | Perangkat atau Supabase kosong | Data dashboard | `/riwayat` dan polling `/api/telemetri` |
 
 ### Tabel Supabase yang dipakai
 
@@ -402,10 +431,15 @@ Jika klip gerak belum tersedia, sistem memakai fallback `benda_{kelas}_{arah}_ne
 
 Catatan skema:
 
-- Server hanya menulis `devices` dan `detections`. Tabel `gps_log` dibaca oleh dashboard dan harus diisi oleh perangkat atau proses lain.
+- Server menyimpan posisi GPS valid dari telemetri Wemos ke `gps_log`; dashboard mengutamakan posisi live dan tidak menampilkan posisi tersimpan ketika perangkat online tetapi GPS belum mendapat fix.
+- Latitude dan longitude dikirim sebagai derajat desimal (`lat`, `lng`), sesuai urutan yang dipakai peta Google Maps.
+- Peta dashboard memakai Google Maps. Bila `GOOGLE_MAPS_API_KEY` diisi, peta memakai Google Maps JavaScript API sehingga marker rompi, jejak perjalanan, dan marker objek bergerak realtime. Bila kunci belum diisi, dashboard otomatis memakai Google Maps mode embed dan tetap menampilkan koordinat, jarak, satelit, HDOP, kecepatan, dan waktu GPS dari Wemos.
+- Marker objek pada peta adalah perkiraan dari arah (`kiri`/`depan`/`kanan`) dan jarak deteksi terhadap posisi rompi. Bila baris deteksi sudah memiliki `lat`/`lng`, koordinat itu yang dipakai.
+- Jejak perjalanan disimpan di memori server (maksimal 300 titik) dan ikut dikirim pada setiap event SSE maupun `/dashboard/data`.
 - Kolom `urgency` memakai nilai `Tinggi`, `Sedang`, atau `Rendah`. Kolom `urgency_score` memakai skor fuzzy 0 sampai 100.
+- Deteksi `umum` dari sensor ultrasonik tetap tampil di dashboard dan riwayat lokal, tetapi tidak ditulis ke tabel `detections` karena constraint tabel hanya menerima lima kelas model.
 - Repo tidak menyertakan migrasi SQL. Pastikan tabel dan kolom di atas sudah ada di proyek Supabase.
-- Aktifkan Row Level Security dan policy `SELECT` yang sesuai untuk pembacaan browser.
+- Aktifkan Row Level Security. Dashboard tidak lagi membaca tabel langsung dari browser; data diambil melalui `/dashboard/data` memakai service-role key di server.
 - Service-role key hanya boleh berada di `.env` root dan tidak boleh masuk ke bundle frontend.
 
 ### Konfigurasi environment
@@ -423,16 +457,21 @@ Backend, dibaca dari `.env` root:
 | `VEST_RIWAYAT_PATH` | Path riwayat JSONL, default `data/riwayat.jsonl` |
 | `VEST_HOST` | Host server, default `127.0.0.1` |
 | `VEST_PORT` | Port server, default `8080` |
+| `GOOGLE_MAPS_API_KEY` | Kunci Google Maps JavaScript API untuk marker, jejak, dan objek realtime; bila kosong dashboard memakai mode embed |
+| `VEST_MAP_DEFAULT_LAT` | Latitude pusat peta saat GPS belum fix, default `-8.1689` |
+| `VEST_MAP_DEFAULT_LNG` | Longitude pusat peta saat GPS belum fix, default `113.7020` |
+| `VEST_MAP_ZOOM` | Zoom awal peta Google Maps, default `17` |
 | `SUPABASE_URL` | URL proyek Supabase |
 | `SUPABASE_SERVICE_ROLE_KEY` | Service-role key untuk penulisan backend |
-| `VEST_SUPABASE_DEVICE_ID` | UUID perangkat virtual, opsional |
+| `VEST_SUPABASE_DEVICE_ID` | UUID perangkat nyata di tabel `devices`; bila kosong, server memakai perangkat pertama yang sudah ada |
 
 Frontend, dibaca dari `vest-care-react/.env.local`:
 
 | Kunci | Fungsi |
 |---|---|
-| `NEXT_PUBLIC_SUPABASE_URL` atau `VITE_SUPABASE_URL` | URL proyek Supabase untuk browser |
-| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` atau `VITE_SUPABASE_ANON_KEY` | Publishable atau anon key untuk pembacaan browser |
+| `NEXT_PUBLIC_SUPABASE_URL` atau `VITE_SUPABASE_URL` | URL proyek Supabase (opsional, untuk realtime di masa depan) |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` atau `VITE_SUPABASE_ANON_KEY` | Publishable atau anon key (opsional, bukan untuk menulis data) |
+| `VITE_GOOGLE_MAPS_API_KEY` | Alternatif kunci Google Maps saat build; kunci runtime `GOOGLE_MAPS_API_KEY` di `.env` server lebih dulu dipakai agar tidak perlu rebuild |
 
 ### Endpoint API
 
@@ -443,7 +482,11 @@ Frontend, dibaca dari `vest-care-react/.env.local`:
 | `GET` | `/` | Dashboard React VestCare |
 | `GET` | `/app` | Alias dashboard React VestCare |
 | `GET` | `/docs` | Dokumentasi OpenAPI |
-| `GET` | `/dashboard/data` | Data perangkat, deteksi, dan GPS langsung dari Supabase |
+| `GET` | `/dashboard/data` | Data perangkat, deteksi, GPS, dan jejak dari Supabase/server |
+| `GET` | `/config` | Konfigurasi publik dashboard: titik pusat peta, zoom, dan kunci Google Maps |
+| `POST` | `/api/telemetri` | Telemetri jarak dan GPS dari Wemos; memerlukan `X-API-Key` jika autentikasi aktif |
+| `GET` | `/api/telemetri` | Telemetri terakhir, status online, dan jejak GPS |
+| `GET` | `/api/telemetri/stream` | Server-Sent Events telemetri realtime untuk peta Google Maps |
 | `POST` | `/deteksi` | Upload gambar multipart dan `jarak_m` opsional |
 | `POST` | `/deteksi/suara` | Sama seperti `/deteksi`, dengan rencana suara |
 | `POST` | `/peringatan` | JSON `{ "skor_risiko": 0..1, "jarak_m": ... }` |
@@ -465,8 +508,9 @@ Jika `VEST_API_KEY` aktif, sertakan header `X-API-Key` pada setiap request yang 
 | `dataset_gabungan.yaml` | Konfigurasi dataset gabungan 5 kelas |
 | `models/best.pt` | Bobot aktif yang dipakai server |
 | `vest-care-react/` | Dashboard React, hasil build disajikan dari `vest-care-react/dist/` |
-| `vest-care-react/src/useVestData.js` | Pembacaan Supabase dan fallback API |
+| `vest-care-react/src/useVestData.js` | Pembacaan `/dashboard/data`, SSE telemetri, dan fallback `/riwayat` |
 | `vest-care-react/src/components/CameraCapture.jsx` | Kamera, pengiriman frame, kotak objek, dan pemutaran suara |
+| `vest-care-react/src/components/GpsMap.jsx` | Peta Google Maps realtime, marker objek, jejak GPS, dan panel telemetri Wemos |
 | `suara-natural-ai/` | Pustaka klip suara, perakit kalimat, dan contoh integrasi |
 | `runs/segment/runs/` | Artefak training, laporan, dan evaluasi |
 | `data/riwayat.jsonl` | Riwayat deteksi lokal, tidak di-commit |
@@ -513,10 +557,15 @@ VEST_MODEL_PATH=models/best.pt
 VEST_IMGSZ=512
 VEST_CONF=0.35
 VEST_CONF_RAGU=0.50
-VEST_HOST=127.0.0.1
+VEST_HOST=0.0.0.0
 VEST_PORT=8080
+GOOGLE_MAPS_API_KEY=<kunci-google-maps-javascript-api>
+VEST_MAP_DEFAULT_LAT=-8.1689
+VEST_MAP_DEFAULT_LNG=113.7020
+VEST_MAP_ZOOM=17
 SUPABASE_URL=https://<proyek>.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
+VEST_SUPABASE_DEVICE_ID=<uuid-perangkat-di-tabel-devices>
 ```
 
 Jalankan:
@@ -529,7 +578,18 @@ cd ..
 python server_rest_api.py
 ```
 
-Server membuka API lokal dan tunnel ngrok. URL utama ngrok langsung menampilkan dashboard React, sedangkan `/app` tetap menjadi alias. Dokumentasi interaktif tersedia di `/docs`. Build dashboard perlu diperbarui dengan `npm run build` setiap kali source React berubah.
+Dengan `VEST_HOST=0.0.0.0`, server dapat menerima koneksi dari Wemos pada jaringan Wi-Fi yang sama. URL utama ngrok langsung menampilkan dashboard React, sedangkan `/app` tetap menjadi alias. Dokumentasi interaktif tersedia di `/docs`. URL publik terakhir juga disimpan di `data/public_url.txt`. Build dashboard perlu diperbarui dengan `npm run build` setiap kali source React berubah.
+
+Peta dashboard memakai Google Maps. Isi `GOOGLE_MAPS_API_KEY` pada `.env` root dengan kunci Google Maps JavaScript API yang dibatasi untuk domain dashboard/ngrok. Kunci dibaca saat server berjalan melalui `/config`, jadi mengganti kunci tidak memerlukan build ulang. Bila kunci kosong atau ditolak, dashboard otomatis memakai Google Maps mode embed agar lokasi Wemos tetap terlihat.
+
+### Menghubungkan Wemos ke server dan dashboard
+
+1. Sambungkan komputer/server dan Wemos ke jaringan Wi-Fi yang sama. Jalankan server dengan `VEST_HOST=0.0.0.0` dan port yang sesuai.
+2. Saat portal konfigurasi `Wemos_Setup` muncul, isi Wi-Fi saja. URL server ngrok aktif sudah menjadi default di sketch dan terisi otomatis; URL itu harus diperbarui dan sketch di-flash ulang jika alamat ngrok berubah.
+3. Isi nilai `VEST_API_KEY` yang sama dengan konfigurasi server. Wemos menyimpan pengaturan di EEPROM; tahan D5 saat boot untuk menghapus konfigurasi Wi-Fi/server dan membuka portal konfigurasi lagi.
+4. Wemos mengirim jarak ultrasonik dan GPS melalui HTTPS ke `/api/telemetri` setiap 5 detik, menggunakan header `X-API-Key` dan `ngrok-skip-browser-warning`. Sertifikat TLS diverifikasi dan waktu sertifikat disinkronkan lewat NTP; jangan matikan verifikasi TLS. Dashboard di URL ngrok yang sama akan menampilkan status perangkat dan lokasi. Pada kunjungan browser pertama ke domain ngrok gratis, buka/konfirmasi halaman peringatan ngrok terlebih dahulu. Periksa Serial Monitor 115200 baud untuk status HTTP.
+
+Wemos menyimpan API key di EEPROM. Gunakan hanya pada perangkat dan jaringan Wi-Fi tepercaya, serta jangan membagikan sketch atau backup EEPROM yang berisi kunci tersebut. Trust anchor TLS yang dipakai mengikuti rantai Let's Encrypt untuk domain ngrok saat ini; perbarui sertifikat CA di sketch bila rantai sertifikat ngrok berubah.
 
 ### Deteksi dari kamera tanpa dashboard
 

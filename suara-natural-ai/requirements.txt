@@ -3,7 +3,4 @@ edge-tts>=6.1.0
 pydub>=0.25.1
 pygame-ce>=2.5.0
 numpy>=1.24          # dibutuhkan fuzzysugeno.py (sumber kelas dan tingkat peringatan)
-# LLM gratis (Gemini / Ollama) tidak memerlukan paket tambahan.
-# Hanya bila memakai opsi berbayar --llm anthropic:  pip install anthropic
-# Catatan: FFmpeg harus terpasang di sistem (bukan paket pip).
 audioop-lts>=0.2.1; python_version >= '3.13'

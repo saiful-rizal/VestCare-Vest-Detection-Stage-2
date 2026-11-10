@@ -1,6 +1,5 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import "leaflet/dist/leaflet.css";
 import "./assets/css/nucleo-icons.css";
 import "./assets/css/nucleo-svg.css";
 import "./index.css";

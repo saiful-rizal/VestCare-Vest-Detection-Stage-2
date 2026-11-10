@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import avatar from "../assets/img/avatar.png";
-import { COLOR, profile } from "../data";
+import { COLOR, fmt, profile } from "../data";
 
-export default function ProfileMenu({ device, position }) {
+export default function ProfileMenu({ device, position, telemetry, telemetryOnline }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -17,6 +17,16 @@ export default function ProfileMenu({ device, position }) {
       document.removeEventListener("keydown", onKey);
     };
   }, []);
+
+  const online = telemetryOnline ?? device.online;
+  const hasTelemetry = Boolean(telemetry?.updatedAt || telemetry?.fix || telemetry?.terbaca);
+  const gpsLabel = telemetry?.fix
+    ? "Fix"
+    : telemetry?.terbaca
+      ? "Mencari satelit"
+      : hasTelemetry
+        ? "Tidak terbaca"
+        : "-";
 
   return (
     <li className="relative flex items-center" ref={ref}>
@@ -43,11 +53,18 @@ export default function ProfileMenu({ device, position }) {
           <div className="vc-row">
             <span>Status rompi</span>
             <span>
-              <span className="vc-dot" style={{ background: device.online ? COLOR.Rendah : "#9a8b88" }}></span>
-              {device.online ? "Online" : "Offline"}
+              <span className="vc-dot" style={{ background: online ? COLOR.Rendah : "#9a8b88" }}></span>
+              {online ? "Online" : "Offline"}
             </span>
           </div>
-          <div className="vc-row"><span>Baterai</span><span>{device.battery == null ? "-" : `${device.battery}%`}</span></div>
+          <div className="vc-row">
+            <span>Jarak sensor</span>
+            <span>{telemetry?.jarak == null ? "-" : `${fmt(telemetry.jarak)} m`}</span>
+          </div>
+          <div className="vc-row">
+            <span>GPS</span>
+            <span>{gpsLabel}{telemetry?.fix ? ` · ${telemetry.sat} satelit` : ""}</span>
+          </div>
           <div className="vc-row"><span>Lokasi terakhir</span><span>{position ? `${position.lat.toFixed(5)}, ${position.lng.toFixed(5)}` : "Belum tersedia"}</span></div>
         </div>
       )}
