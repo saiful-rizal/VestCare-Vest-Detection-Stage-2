@@ -46,6 +46,7 @@ EXPECTED_CLASSES = {
     3: "orang",
     4: "lubang",
 }
+INTERNAL_CLASSES = {5: "__non_target_internal__"}
 METRIC_COLUMNS = [
     "mask_p", "mask_r", "mask_f1", "mask_map50", "mask_map5095",
     "box_p", "box_r", "box_f1", "box_map50", "box_map5095",
@@ -115,9 +116,10 @@ def read_dataset(data_yaml):
         names = {int(class_id): str(name) for class_id, name in names.items()}
     else:
         raise ValueError(f"Daftar kelas tidak valid di {data_yaml}")
-    if names != EXPECTED_CLASSES:
+    if names not in (EXPECTED_CLASSES, {**EXPECTED_CLASSES, **INTERNAL_CLASSES}):
         raise ValueError(
-            f"Dataset harus memakai lima kelas {EXPECTED_CLASSES}; ditemukan {names}."
+            f"Dataset harus memakai kelas target {EXPECTED_CLASSES} "
+            f"dengan atau tanpa kelas internal; ditemukan {names}."
         )
     return data, names
 
@@ -212,6 +214,7 @@ def evaluate_total(model, yaml_path, args, output_dir, split):
         device=args.device,
         plots=True,
         verbose=True,
+        classes=sorted(EXPECTED_CLASSES),
         project=str((output_dir / "ultralytics").resolve()),
         name=f"total_{split}",
         exist_ok=True,
@@ -229,7 +232,7 @@ def evaluate_total(model, yaml_path, args, output_dir, split):
         int(class_id): index
         for index, class_id in enumerate(getattr(results, "ap_class_index", []))
     }
-    for class_id, class_name in sorted(names.items()):
+    for class_id, class_name in sorted(EXPECTED_CLASSES.items()):
         row = {"kelas": class_name}
         result_index = result_indices.get(class_id)
         for kind, metrics in (("mask", results.seg), ("box", results.box)):
@@ -301,6 +304,7 @@ def evaluate_variants(model, images, names, args):
                 device=args.device,
                 plots=False,
                 verbose=False,
+                classes=sorted(EXPECTED_CLASSES),
                 project=str(temp_dir / "runs"),
                 name="evaluation",
                 exist_ok=True,
@@ -327,7 +331,8 @@ def analyze_image_errors(model, images, args, output_dir):
     for image in images:
         actual = read_ground_truth_classes(image)
         result = model.predict(
-            str(image), imgsz=args.imgsz, conf=args.conf, device=args.device, verbose=False
+            str(image), imgsz=args.imgsz, conf=args.conf, device=args.device,
+            classes=sorted(EXPECTED_CLASSES), verbose=False
         )[0]
         predicted = (
             set(int(class_id) for class_id in result.boxes.cls.tolist())

@@ -170,6 +170,7 @@ class InferensiVest:
             source=gambar,
             imgsz=self.imgsz,
             conf=conf,
+            classes=sorted(KELAS_ID_KE_NAMA),
             verbose=False,
         )[0]
         deteksi = analisis_hasil(

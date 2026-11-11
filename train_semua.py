@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 import shutil
+import zipfile
 
 import torch
 import yaml
@@ -21,11 +22,11 @@ MODEL = "yolo26n-seg.pt"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
 DATASETS = [
-    ("lubang", ROOT / "dataset_lubang" / "3_pengayaan_gerak" / "data.yaml"),
-    ("mobil", ROOT / "dataset_mobil" / "3_pengayaan_gerak" / "data.yaml"),
-    ("motor", ROOT / "dataset_motor" / "3_pengayaan_gerak" / "data.yaml"),
-    ("orang", ROOT / "dataset_orang" / "3_pengayaan_gerak" / "data.yaml"),
-    ("pohon", ROOT / "dataset_pohon" / "3_pengayaan_gerak" / "data.yaml"),
+    ("lubang", ROOT / "dataset_utama" / "dataset_lubang" / "3_pengayaan_gerak" / "data.yaml"),
+    ("mobil", ROOT / "dataset_utama" / "dataset_mobil" / "3_pengayaan_gerak" / "data.yaml"),
+    ("motor", ROOT / "dataset_utama" / "dataset_motor" / "3_pengayaan_gerak" / "data.yaml"),
+    ("orang", ROOT / "dataset_utama" / "dataset_orang" / "3_pengayaan_gerak" / "data.yaml"),
+    ("pohon", ROOT / "dataset_utama" / "dataset_pohon" / "3_pengayaan_gerak" / "data.yaml"),
 ]
 EXPECTED_CLASSES = {
     0: "pohon",
@@ -34,6 +35,10 @@ EXPECTED_CLASSES = {
     3: "orang",
     4: "lubang",
 }
+SUPPORT_CLASS_ID = len(EXPECTED_CLASSES)
+SUPPORT_CLASS_NAME = "__non_target_internal__"
+TRAINING_CLASSES = {**EXPECTED_CLASSES, SUPPORT_CLASS_ID: SUPPORT_CLASS_NAME}
+SUPPORTING_DATASET_DIR = ROOT / "dataset penunjang"
 VAL_FRACTION = 0.10
 
 EPOCHS = 100
@@ -135,8 +140,99 @@ def capture_console(log_path):
                 handler.setStream(stream)
 
 
-def buat_data_gabungan():
-    """Gabungkan lima dataset dan pisahkan train/val tanpa membagi varian satu gambar."""
+def _siapkan_gambar_penunjang(output_dir):
+    """Stage objek di luar kelas utama sebagai satu kelas internal untuk training."""
+    archives = sorted(SUPPORTING_DATASET_DIR.glob("*.zip"))
+    if not archives:
+        raise FileNotFoundError(
+            f"Arsip dataset penunjang tidak ditemukan: {SUPPORTING_DATASET_DIR}"
+        )
+
+    image_dir = output_dir / "images" / "train"
+    label_dir = output_dir / "labels" / "train"
+    image_dir.mkdir(parents=True, exist_ok=True)
+    label_dir.mkdir(parents=True, exist_ok=True)
+    staged_images = []
+    seen_targets = set()
+
+    for archive_path in archives:
+        with zipfile.ZipFile(archive_path) as archive:
+            data_member = next(
+                (name for name in archive.namelist() if name.lower() == "data.yaml"),
+                None,
+            )
+            if data_member is None:
+                raise ValueError(f"data.yaml tidak ditemukan di {archive_path}")
+            data = yaml.safe_load(archive.read(data_member)) or {}
+            names = data.get("names")
+            if isinstance(names, list):
+                names = dict(enumerate(names))
+            elif isinstance(names, dict):
+                names = {int(class_id): str(name) for class_id, name in names.items()}
+            else:
+                raise ValueError(f"Daftar kelas tidak valid di {archive_path}")
+
+            target_name = archive_path.stem.removeprefix("dataset_")
+            target_ids = [
+                class_id for class_id, name in names.items() if name == target_name
+            ]
+            if len(target_ids) != 1:
+                raise ValueError(
+                    f"Kelas '{target_name}' tidak cocok dengan data.yaml di {archive_path}"
+                )
+            target_id = target_ids[0]
+            image_members = sorted(
+                name for name in archive.namelist()
+                if name.lower().startswith("images/train/")
+                and Path(name).suffix.lower() in IMAGE_EXTENSIONS
+            )
+            if not image_members:
+                raise ValueError(f"Tidak ada gambar train di {archive_path}")
+
+            for member in image_members:
+                relative_image = Path(member)
+                relative_label = relative_image.with_suffix(".txt")
+                label_member = f"labels/train/{relative_label.name}"
+                if label_member not in archive.namelist():
+                    raise FileNotFoundError(
+                        f"Label untuk gambar {member} tidak ditemukan di {archive_path}"
+                    )
+
+                remapped_lines = []
+                for line in archive.read(label_member).decode("utf-8-sig").splitlines():
+                    fields = line.split()
+                    if not fields:
+                        continue
+                    class_id = int(float(fields[0]))
+                    if class_id != target_id:
+                        raise ValueError(
+                            f"Label kelas {class_id} bukan '{target_name}' di "
+                            f"{archive_path}:{label_member}"
+                        )
+                    fields[0] = str(SUPPORT_CLASS_ID)
+                    remapped_lines.append(" ".join(fields))
+                if not remapped_lines:
+                    raise ValueError(
+                        f"Label kosong untuk gambar {member} di {archive_path}"
+                    )
+
+                staged_name = f"{archive_path.stem}_{relative_image.name}"
+                image_target = image_dir / staged_name
+                label_target = label_dir / f"{Path(staged_name).stem}.txt"
+                if image_target in seen_targets:
+                    raise ValueError(f"Nama gambar penunjang duplikat: {staged_name}")
+                seen_targets.add(image_target)
+                image_target.write_bytes(archive.read(member))
+                label_target.write_text(
+                    "\n".join(remapped_lines) + "\n", encoding="utf-8"
+                )
+                staged_images.append(image_target.resolve())
+
+    return staged_images
+
+
+def buat_data_gabungan(run_name=None):
+    """Split kelas utama dan tambahkan objek penunjang hanya ke data train."""
     groups_by_dataset = {}
 
     for nama, data_yaml in DATASETS:
@@ -240,8 +336,12 @@ def buat_data_gabungan():
     if set(EXPECTED_CLASSES) - val_classes:
         raise ValueError(f"Kelas hilang dari data val: {set(EXPECTED_CLASSES) - val_classes}")
 
-    split_dir = ROOT / "runs" / "dataset_splits"
+    run_name = run_name or f"training_{datetime.now():%Y%m%d_%H%M%S_%f}"
+    split_dir = ROOT / "runs" / "dataset_splits" / run_name
     split_dir.mkdir(parents=True, exist_ok=True)
+    supporting_images = _siapkan_gambar_penunjang(split_dir / "supporting")
+    train_images.extend(supporting_images)
+
     train_manifest = split_dir / "train.txt"
     val_manifest = split_dir / "val.txt"
     train_manifest.write_text(
@@ -258,7 +358,7 @@ def buat_data_gabungan():
         "path": ROOT.as_posix(),
         "train": train_manifest.as_posix(),
         "val": val_manifest.as_posix(),
-        "names": EXPECTED_CLASSES,
+        "names": TRAINING_CLASSES,
     }
     with config_path.open("w", encoding="utf-8") as file:
         yaml.safe_dump(config, file, sort_keys=False, allow_unicode=True)
@@ -332,7 +432,7 @@ def ringkasan_metrik(results):
         mask_map75_by_name[class_names[class_id]] = results.seg.all_ap[position][5]
 
     per_class = []
-    for class_id, class_name in sorted(class_names.items()):
+    for class_id, class_name in sorted(EXPECTED_CLASSES.items()):
         row = summary_by_name.get(class_name, {})
         mask = mask_by_name.get(class_name)
         per_class.append({
@@ -640,7 +740,8 @@ def latih(data_yaml, run_name):
     print("\n" + "=" * 60)
     print("[INFO] Melatih satu model dengan gabungan semua dataset dan kelas")
     print(f"[INFO] Dataset config : {data_yaml}")
-    print(f"[INFO] Jumlah kelas   : 5")
+    print(f"[INFO] Jumlah kelas keluaran: {len(EXPECTED_CLASSES)}")
+    print(f"[INFO] Kelas internal penolak objek: {SUPPORT_CLASS_NAME}")
     print(f"[INFO] model          : {MODEL}")
     print(f"[INFO] device         : {DEVICE}")
     print(f"[INFO] GPU            : {torch.cuda.get_device_name(int(DEVICE))}")
@@ -704,11 +805,11 @@ def main():
     exit_code = 0
     try:
         with capture_console(log_path):
-            data_yaml = buat_data_gabungan()
+            data_yaml = buat_data_gabungan(run_name)
             dataset = informasi_dataset(data_yaml)
-            print(f"[INFO] Menggabungkan {len(DATASETS)} dataset ke satu proses training.")
+            print(f"[INFO] Menggabungkan {len(DATASETS)} dataset utama ke satu proses training.")
             print(
-                f"[INFO] Kelas: {', '.join(EXPECTED_CLASSES.values())} | "
+                f"[INFO] Kelas keluaran: {', '.join(EXPECTED_CLASSES.values())} | "
                 f"train: {dataset['train']['image_count']} gambar | "
                 f"val: {dataset['val']['image_count']} gambar"
             )
@@ -725,13 +826,12 @@ def main():
             if not history:
                 raise ValueError(f"Tidak ada riwayat metrik training di {results_csv}")
 
-            names = yaml.safe_load(Path(data_yaml).read_text(encoding="utf-8"))["names"]
             report = {
                 "model": MODEL,
                 "checkpoint_best": str(best),
                 "dataset_config": str(data_yaml),
                 "dataset": dataset,
-                "classes": names,
+                "classes": EXPECTED_CLASSES,
                 "training": {
                     "epochs_requested": EPOCHS,
                     "epochs_completed": len(history),
@@ -764,6 +864,7 @@ def main():
                     save_json=True,
                     save_txt=True,
                     save_conf=True,
+                    classes=sorted(EXPECTED_CLASSES),
                 )
                 report["validation"][split] = ringkasan_metrik(results)
                 report["validation"][split]["artifacts_dir"] = str(

@@ -13,6 +13,7 @@ KELAS_ID_KE_NAMA: dict[int, str] = {
     3: "orang",
     4: "lubang",
 }
+KELAS_INTERNAL_MODEL: dict[int, str] = {5: "__non_target_internal__"}
 
 BAHAYA_KELAS = {
     "lubang": 10,
@@ -68,7 +69,10 @@ def validasi_nama_kelas(
     else:
         nama_kelas_normal = dict(enumerate(map(str, nama_kelas)))
 
-    if nama_kelas_normal != KELAS_ID_KE_NAMA:
+    if nama_kelas_normal not in (
+        KELAS_ID_KE_NAMA,
+        {**KELAS_ID_KE_NAMA, **KELAS_INTERNAL_MODEL},
+    ):
         raise ValueError(f"Urutan kelas model tidak cocok: {nama_kelas_normal}")
 
     return nama_kelas_normal
@@ -502,6 +506,8 @@ def analisis_hasil(
             class_id = int(box.cls)
             if class_id not in nama_kelas:
                 raise ValueError(f"Class ID model tidak dikenal: {class_id}")
+            if class_id not in KELAS_ID_KE_NAMA:
+                continue
             nama = nama_kelas[class_id]
             if conf < CONF_MIN_KELAS.get(nama, conf_min):
                 continue
