@@ -1,0 +1,14 @@
+{
+  "conf_kelas": {
+    "pohon": 0.507,
+    "mobil": 0.9,
+    "motor": 0.867,
+    "orang": 0.802,
+    "lubang": 0.828
+  },
+  "target_presisi": 0.99,
+  "seed_split": 146,
+  "seed_latih": 42,
+  "run": "semua_kelas_20261115_215512_s42",
+  "model_sha256": "9a39925330230614d04a7171afa760ce6259f8090f6ea0dcc1bd12b1931421e7"
+}

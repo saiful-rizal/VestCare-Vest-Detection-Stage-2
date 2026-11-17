@@ -1,0 +1,2 @@
+# Untuk PEMAKAI pustaka (kode deteksi / perangkat). Tidak butuh internet atau LLM.
+pygame-ce>=2.5.0

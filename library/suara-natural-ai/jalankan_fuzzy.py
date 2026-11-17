@@ -1,0 +1,160 @@
+import argparse
+import json
+import math
+import sys
+from pathlib import Path
+
+import cv2
+from ultralytics import YOLO
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+LIBRARY_DIR = ROOT / "library"
+if str(LIBRARY_DIR) not in sys.path:
+    sys.path.insert(0, str(LIBRARY_DIR))
+
+from fuzzysugeno import KELAS_ID_KE_NAMA, PelacakGerak, analisis_hasil, validasi_nama_kelas
+
+DEFAULT_MODEL = ROOT / "models" / "kandidat_20261116_071306.pt"
+DEFAULT_CONF = 0.35
+
+
+def sumber_video(value):
+    return int(value) if value.isdigit() else value
+
+
+def muat_ambang_conf(model_path):
+    path = model_path.with_name("ambang_conf.json")
+    if not path.is_file():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    conf_kelas = data.get("conf_kelas")
+    if not isinstance(conf_kelas, dict):
+        raise ValueError(f"Format ambang kelas tidak valid: {path}")
+    return {
+        str(nama): float(nilai)
+        for nama, nilai in conf_kelas.items()
+        if nama in KELAS_ID_KE_NAMA.values() and 0.05 <= float(nilai) <= 0.99
+    }
+
+
+TINGGI_REFERENSI_M = {
+    "pohon": 2.0,
+    "lubang": 0.4,
+    "orang": 1.7,
+    "motor": 1.2,
+    "mobil": 1.5,
+}
+
+
+def estimasi_jarak(box_xyxy, nama, tinggi_gambar, fov_vertikal, jarak_maks):
+    tinggi_box = max(1.0, float(box_xyxy[3]) - float(box_xyxy[1]))
+    focal_px = tinggi_gambar / (2.0 * math.tan(math.radians(fov_vertikal) / 2.0))
+    tinggi_objek = TINGGI_REFERENSI_M.get(nama, 1.5)
+    jarak = focal_px * tinggi_objek / tinggi_box
+    return max(0.2, min(jarak_maks, jarak))
+
+
+def gambar_box_rapat(res, conf_min):
+    frame = res.orig_img.copy()
+    masks = res.masks.xy if res.masks is not None else []
+    for i, box in enumerate(res.boxes):
+        conf = float(box.conf)
+        if conf < conf_min:
+            continue
+        kelas_id = int(box.cls)
+        nama = res.names[kelas_id]
+        warna = (
+            int((kelas_id * 67 + 80) % 255),
+            int((kelas_id * 113 + 120) % 255),
+            int((kelas_id * 173 + 160) % 255),
+        )
+        if i < len(masks) and len(masks[i]) >= 3:
+            polygon = masks[i].astype("int32")
+            x, y, lebar, tinggi = cv2.boundingRect(polygon)
+            overlay = frame.copy()
+            cv2.fillPoly(overlay, [polygon], warna)
+            frame = cv2.addWeighted(overlay, 0.18, frame, 0.82, 0)
+        else:
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+            x, y = round(x1), round(y1)
+            lebar, tinggi = round(x2 - x1), round(y2 - y1)
+        cv2.rectangle(frame, (x, y), (x + lebar, y + tinggi), warna, 2)
+        cv2.putText(frame, f"{nama} {conf:.2f}", (x, max(20, y - 6)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, warna, 2, cv2.LINE_AA)
+    return frame
+
+
+def main():
+    ap = argparse.ArgumentParser(description="YOLO-seg + Fuzzy Sugeno")
+    ap.add_argument("--model", type=Path, default=DEFAULT_MODEL)
+    ap.add_argument("--source", default="0", help="0 untuk webcam, atau path gambar/video")
+    ap.add_argument("--conf", type=float, default=DEFAULT_CONF,
+                    help="confidence minimum YOLO sebelum diteruskan ke fuzzy")
+    ap.add_argument("--conf-ragu", type=float, default=0.50,
+                    help="confidence di bawah nilai ini ditandai ragu dan tidak diucapkan")
+    ap.add_argument("--jarak", type=float, default=None,
+                    help="override jarak tetap dalam meter; tanpa opsi ini memakai estimasi bounding box")
+    ap.add_argument("--fov-vertikal", type=float, default=60.0,
+                    help="field of view vertikal kamera untuk estimasi jarak")
+    ap.add_argument("--jarak-maks", type=float, default=2.0,
+                    help="batas maksimum estimasi jarak dalam meter")
+    args = ap.parse_args()
+
+    if not args.model.exists():
+        raise SystemExit(f"Model tidak ditemukan: {args.model}")
+
+    model = YOLO(str(args.model))
+    validasi_nama_kelas(model.names)
+    conf_kelas = muat_ambang_conf(args.model)
+    if conf_kelas:
+        print(f"Ambang kelas dari kalibrasi val: {conf_kelas}")
+    latih_imgsz = (getattr(model, "overrides", {}) or {}).get("imgsz")
+    imgsz = int(
+        latih_imgsz[0] if isinstance(latih_imgsz, (list, tuple)) else latih_imgsz
+    ) if latih_imgsz else 640
+    batas_dasar = min([args.conf, *conf_kelas.values()]) if conf_kelas else args.conf
+    source = sumber_video(args.source)
+    hasil = model.predict(
+        source=source, imgsz=imgsz, conf=batas_dasar, stream=True, verbose=False
+    )
+    pelacak = PelacakGerak()
+
+    for res in hasil:
+        analisis = analisis_hasil(
+            res,
+            jarak_fn=(
+                (lambda box, nama: args.jarak)
+                if args.jarak is not None
+                else (lambda box, nama: estimasi_jarak(
+                    box, nama, res.orig_shape[0], args.fov_vertikal, args.jarak_maks))
+            ),
+            conf_min=args.conf,
+            conf_ragu=args.conf_ragu,
+            conf_kelas=conf_kelas or None,
+        )
+        pelacak.perbarui(analisis)
+        frame = gambar_box_rapat(res, args.conf)
+        if not analisis:
+            cv2.putText(frame, "Tidak ada deteksi yang memenuhi confidence",
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65,
+                        (180, 180, 180), 2, cv2.LINE_AA)
+        for i, item in enumerate(analisis):
+            gerak = "" if item.get("gerak", "netral") == "netral" else f" {item['gerak']}"
+            ragu = " RAGU" if item.get("ragu") else ""
+            teks = (f"{item['kelas']}{gerak} {item['conf']:.2f} -> {item['level']}{ragu} "
+                    f"{item['urgensi']:.1f} | {item['jarak_m']:.1f} m")
+            cv2.putText(frame, teks, (10, 30 + i * 28), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.65, (128, 128, 128) if item.get("ragu")
+                        else (0, 0, 255) if item["urgensi"] >= 75 else (0, 200, 255),
+                        2, cv2.LINE_AA)
+            print(item["pesan"])
+        cv2.imshow("YOLO + Fuzzy Sugeno", frame)
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()

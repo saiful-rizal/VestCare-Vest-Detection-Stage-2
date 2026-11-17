@@ -98,8 +98,6 @@ LATEST_TELEMETRI: dict[str, Any] = {
 LATEST_GPS_LOG_AT = 0.0
 LAST_DEVICE_UPDATE_AT = 0.0
 
-# Jejak posisi Wemos selama server hidup. Dipakai peta Google Maps untuk
-# menggambar garis perjalanan tanpa harus menunggu data Supabase.
 TELEMETRI_JALUR_LOCK = threading.Lock()
 TELEMETRI_JALUR: deque[dict[str, Any]] = deque(maxlen=300)
 
