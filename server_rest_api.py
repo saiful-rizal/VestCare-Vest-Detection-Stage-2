@@ -13,11 +13,13 @@ import threading
 import time
 import uuid
 from collections import deque
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import sys
-from typing import Any, Optional
+from typing import Any, Optional, cast
 from urllib.error import HTTPError, URLError
 import urllib.parse
 from urllib.request import Request as UrlRequest, urlopen
@@ -40,13 +42,17 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from PIL import Image
 from starlette.concurrency import run_in_threadpool
+from starlette.responses import Response
+from ultralytics.engine.results import Results
 import io
 
 ROOT = Path(__file__).resolve().parent
-DASHBOARD_DIR = ROOT / "vest-care-react" / "dist"
+DASHBOARD_DIR = ROOT / "web" / "react" / "dist"
 DASHBOARD_INDEX = DASHBOARD_DIR / "index.html"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+JsonRecord = dict[str, Any]
 
 def load_project_env() -> None:
     env_path = ROOT / ".env"
@@ -72,12 +78,12 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 SUPABASE_DEVICE_ID_ENV = os.environ.get("VEST_SUPABASE_DEVICE_ID", "").strip()
 SUPABASE_DEVICE_FALLBACK = str(uuid.uuid5(uuid.NAMESPACE_URL, "vestcare-server-device"))
-SUPABASE_DEVICE_ID = SUPABASE_DEVICE_ID_ENV or SUPABASE_DEVICE_FALLBACK
+supabase_device_id = SUPABASE_DEVICE_ID_ENV or SUPABASE_DEVICE_FALLBACK
 SUPABASE_SYNC_LOCK = threading.Lock()
-SUPABASE_LAST_SIGNATURE = ""
-SUPABASE_LAST_SAVED_AT = 0.0
-SUPABASE_CONNECTED = False
-SUPABASE_CONNECTION_ERROR: Optional[str] = None
+supabase_last_signature = ""
+supabase_last_saved_at = 0.0
+supabase_connected = False
+supabase_connection_error: Optional[str] = None
 
 LATEST_TELEMETRI_LOCK = threading.Lock()
 LATEST_TELEMETRI: dict[str, Any] = {
@@ -95,8 +101,8 @@ LATEST_TELEMETRI: dict[str, Any] = {
     "battery": None,
     "updated_at": 0.0,
 }
-LATEST_GPS_LOG_AT = 0.0
-LAST_DEVICE_UPDATE_AT = 0.0
+latest_gps_log_at = 0.0
+last_device_update_at = 0.0
 
 TELEMETRI_JALUR_LOCK = threading.Lock()
 TELEMETRI_JALUR: deque[dict[str, Any]] = deque(maxlen=300)
@@ -110,7 +116,7 @@ def api_key_is_configured(value: Optional[str]) -> bool:
 
 
 DEFAULT_MODEL = ROOT / "models" / "best.pt"
-DEFAULT_SUARA_FOLDER = ROOT / "suara-natural-ai" / "cache_ardi"
+DEFAULT_SUARA_FOLDER = ROOT / "data" / "runtime" / "audio" / "cache_ardi"
 DEFAULT_CONF = 0.35
 DEFAULT_CONF_RAGU = 0.50
 DEFAULT_IMGSZ = 512
@@ -122,7 +128,7 @@ from ultralytics import YOLO
 @dataclass
 class HasilInferensi:
     waktu: str
-    deteksi: list[dict[str, Any]]
+    deteksi: list[JsonRecord]
     aksi_suara: Optional[str] = None
     suara_diputar: bool = False
 
@@ -131,7 +137,7 @@ class HasilInferensi:
         return len(self.deteksi)
 
     @property
-    def deteksi_yakin(self) -> list[dict[str, Any]]:
+    def deteksi_yakin(self) -> list[JsonRecord]:
         return [item for item in self.deteksi if not item.get("ragu")]
 
     @property
@@ -159,19 +165,30 @@ class InferensiVest:
         self.imgsz = imgsz
         self.pelacak = PelacakGerak()
         self.model = YOLO(str(model_path))
-        validasi_nama_kelas(self.model.names)
+        nama_kelas = cast(
+            Mapping[int, str] | list[str] | tuple[str, ...],
+            self.model.names,
+        )
+        validasi_nama_kelas(nama_kelas)
 
     def deteksi_gambar(self, gambar: np.ndarray, jarak_us: Optional[float] = None,
                        conf_min: Optional[float] = None) -> HasilInferensi:
         conf = self.conf if conf_min is None else conf_min
-        hasil_model = self.model.predict(
+        predict = cast(
+            Callable[..., Iterable[Results]],
+            getattr(self.model, "predict"),
+        )
+        prediksi = predict(
             source=gambar,
             imgsz=self.imgsz,
             conf=conf,
             classes=sorted(KELAS_ID_KE_NAMA),
             verbose=False,
-        )[0]
-        deteksi = analisis_hasil(
+        )
+        hasil_model = next(iter(prediksi), None)
+        if not isinstance(hasil_model, Results):
+            raise RuntimeError("Model tidak menghasilkan objek hasil deteksi.")
+        deteksi: list[JsonRecord] = analisis_hasil(
             hasil_model,
             conf_min=conf,
             jarak_us=jarak_us,
@@ -185,7 +202,7 @@ class InferensiVest:
         )
 
     @staticmethod
-    def ke_dict(hasil: HasilInferensi) -> dict[str, Any]:
+    def ke_dict(hasil: HasilInferensi) -> JsonRecord:
         return {
             "waktu": hasil.waktu,
             "jumlah_objek": hasil.jumlah_objek,
@@ -203,27 +220,49 @@ class PerencanaSuara:
 
     def __init__(self, folder: Path) -> None:
         manifest_path = folder / "manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(manifest_data, dict):
+            raise ValueError(f"Format manifest suara tidak valid: {manifest_path}")
+        manifest: JsonRecord = cast(JsonRecord, manifest_data)
         if manifest.get("skema") not in (2, 3):
             raise ValueError(f"Skema pustaka suara {manifest.get('skema')!r} tidak didukung.")
         self.folder = folder
         self.penutur = str(manifest.get("suara", ""))
-        self.kelas_dikenal = set(manifest.get("kelas", []))
-        self._pesan_siap = {}
-        self._berkas = set()
-        self._varian_terakhir = {}
+        kelas = manifest.get("kelas", [])
+        if not isinstance(kelas, list) or not all(
+            isinstance(item, str) for item in cast(list[Any], kelas)
+        ):
+            raise ValueError(f"Format kelas manifest suara tidak valid: {manifest_path}")
+        self.kelas_dikenal: set[str] = set(cast(list[str], kelas))
+        self._pesan_siap: dict[str, list[JsonRecord]] = {}
+        self._berkas: set[str] = set()
+        self._varian_terakhir: dict[str, int] = {}
         self._rng = random.Random()
-        for key, entries in manifest.get("pesan", {}).items():
-            valid = [
-                entry for entry in entries
-                if entry.get("berkas")
-                and str(entry.get("teks", "")).strip()
-                and (folder / entry["berkas"]).is_file()
-            ]
+        pesan_data = manifest.get("pesan", {})
+        if not isinstance(pesan_data, dict):
+            raise ValueError(f"Format pesan manifest suara tidak valid: {manifest_path}")
+        pesan = cast(JsonRecord, pesan_data)
+        for key, entries in pesan.items():
+            if not isinstance(entries, list):
+                raise ValueError(f"Format entri manifest suara tidak valid: {manifest_path}")
+            entries = cast(list[Any], entries)
+            valid: list[JsonRecord] = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                entry = cast(JsonRecord, entry)
+                berkas = entry.get("berkas")
+                if (
+                    isinstance(berkas, str)
+                    and berkas
+                    and str(entry.get("teks", "")).strip()
+                    and (folder / berkas).is_file()
+                ):
+                    valid.append(entry)
             if valid:
                 self._pesan_siap[key] = valid
-                self._berkas.update(entry["berkas"] for entry in valid)
-        self.tersedia = set(self._pesan_siap)
+                self._berkas.update(str(entry["berkas"]) for entry in valid)
+        self.tersedia: set[str] = set(self._pesan_siap)
         wajib = {"jalur_aman", "awal_waspada", "awal_bahaya"}
         wajib.update(
             f"benda_{kelas}_{arah}_netral"
@@ -250,7 +289,7 @@ class PerencanaSuara:
     def berkas_diizinkan(self, nama_berkas: str) -> bool:
         return nama_berkas in self._berkas
 
-    def _segmen(self, key: str) -> Optional[dict]:
+    def _segmen(self, key: str) -> Optional[JsonRecord]:
         entries = self._pesan_siap.get(key)
         if not entries:
             return None
@@ -268,7 +307,7 @@ class PerencanaSuara:
         }
 
     @staticmethod
-    def _aksi(top: dict, detections: list[dict]) -> str:
+    def _aksi(top: Mapping[str, Any], detections: Iterable[Mapping[str, Any]]) -> str:
         level_name = str(top.get("level", "")).upper()
         direction = top.get("arah", "depan")
         occupied = {
@@ -293,7 +332,7 @@ class PerencanaSuara:
             return "pelan_kiri"
         return "pelan"
 
-    def susun(self, detections: list[dict]) -> Optional[dict]:
+    def susun(self, detections: list[JsonRecord]) -> Optional[JsonRecord]:
         if not detections:
             safe = self._segmen("jalur_aman")
             return {
@@ -325,7 +364,7 @@ class PerencanaSuara:
         gerak = str(top.get("gerak") or "netral")
         if gerak not in ("bergerak", "diam"):
             gerak = "netral"
-        keys = []
+        keys: list[str] = []
         if level_name in ("waspada", "bahaya"):
             keys.append(f"awal_{level_name}")
         benda_key = f"benda_{class_name}_{direction}_{gerak}"
@@ -339,7 +378,9 @@ class PerencanaSuara:
             keys.append(f"jarak_{distance_bucket:02d}")
         action = self._aksi(top, active)
         keys.append(f"solusi_{action}")
-        segments = [part for key in keys if (part := self._segmen(key)) is not None]
+        segments: list[JsonRecord] = [
+            part for key in keys if (part := self._segmen(key)) is not None
+        ]
         if not any(part["kunci"].startswith("benda_") for part in segments):
             return None
         return {
@@ -350,7 +391,7 @@ class PerencanaSuara:
             "segmen": segments,
         }
 
-    def contoh(self) -> Optional[dict]:
+    def contoh(self) -> Optional[JsonRecord]:
         return self.susun([{
             "kelas": "umum",
             "level": "WASPADA",
@@ -373,16 +414,21 @@ def _project_path(value: str | Path) -> Path:
     return path if path.is_absolute() else ROOT / path
 
 
-MODEL_PATH = _project_path(os.environ.get("VEST_MODEL_PATH", DEFAULT_MODEL))
-if not MODEL_PATH.is_file():
-    trained_model = ROOT / "runs" / "segment" / "runs" / "semua_kelas_yolo26n" / "weights" / "best.pt"
+model_path = _project_path(os.environ.get("VEST_MODEL_PATH", DEFAULT_MODEL))
+if not model_path.is_file():
+    trained_model = (
+        ROOT / "data" / "results" / "runs" / "segment" / "runs"
+        / "semua_kelas_yolo26n" / "weights" / "best.pt"
+    )
     if trained_model.is_file():
-        MODEL_PATH = trained_model
+        model_path = trained_model
 SUARA_FOLDER = _project_path(os.environ.get("VEST_SUARA_FOLDER", DEFAULT_SUARA_FOLDER))
 IMGSZ = int(os.environ.get("VEST_IMGSZ", DEFAULT_IMGSZ))
 CONF = float(os.environ.get("VEST_CONF", DEFAULT_CONF))
 CONF_RAGU = float(os.environ.get("VEST_CONF_RAGU", DEFAULT_CONF_RAGU))
-RIWAYAT_PATH = _project_path(os.environ.get("VEST_RIWAYAT_PATH", ROOT / "data" / "riwayat.jsonl"))
+RIWAYAT_PATH = _project_path(
+    os.environ.get("VEST_RIWAYAT_PATH", ROOT / "data" / "runtime" / "riwayat.jsonl")
+)
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 HOST = os.environ.get("VEST_HOST", "127.0.0.1")
 PORT = int(os.environ.get("VEST_PORT", "8080"))
@@ -400,34 +446,40 @@ COOKIE_SESI = "vestcare_sesi"
 UMUR_SESI_DETIK = 12 * 60 * 60
 
 try:
-    PERENCANA_SUARA: Optional[PerencanaSuara] = (
+    perencana_suara: Optional[PerencanaSuara] = (
         PerencanaSuara(SUARA_FOLDER) if (SUARA_FOLDER / "manifest.json").is_file() else None
     )
-    if PERENCANA_SUARA is None:
+    if perencana_suara is None:
         raise FileNotFoundError(f"manifest.json tidak ditemukan di {SUARA_FOLDER}")
     print(
         f"[SUARA] Pustaka browser siap: {SUARA_FOLDER} "
-        f"({len(PERENCANA_SUARA.tersedia)} kunci, penutur {PERENCANA_SUARA.penutur or '-'})"
+        f"({len(perencana_suara.tersedia)} kunci, penutur {perencana_suara.penutur or '-'})"
     )
 except Exception as e:
-    PERENCANA_SUARA = None
+    perencana_suara = None
     print(f"[PERINGATAN] Pustaka suara browser belum siap: {e}")
 
-ENGINE: Optional[InferensiVest] = None
-ENGINE_ERROR: Optional[str] = None
+engine: Optional[InferensiVest] = None
+engine_error: Optional[str] = None
 INFERENSI_LOCK = threading.Lock()
 try:
-    ENGINE = InferensiVest(
-        model_path=MODEL_PATH,
+    engine = InferensiVest(
+        model_path=model_path,
         conf=CONF,
         imgsz=IMGSZ,
         conf_ragu=CONF_RAGU,
     )
-    print(f"[API] Engine inferensi siap. Model: {MODEL_PATH}")
+    print(f"[API] Engine inferensi siap. Model: {model_path}")
 except Exception as e:
-    ENGINE_ERROR = str(e)
-    print(f"[PERINGATAN] Engine belum siap: {ENGINE_ERROR}")
+    engine_error = str(e)
+    print(f"[PERINGATAN] Engine belum siap: {engine_error}")
     print("  /deteksi akan menolak request sampai engine berhasil dimuat.")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
+    await hubungkan_supabase_saat_server_mulai()
+    yield
+
 
 app = FastAPI(
     title="VestCare API",
@@ -436,11 +488,12 @@ app = FastAPI(
         "untuk rompi tunanetra. Dapat diterbitkan melalui ngrok."
     ),
     version="2.0.0",
+    lifespan=lifespan,
 )
 
 
 @app.exception_handler(RequestValidationError)
-async def invalid_request(request: Request, error: RequestValidationError):
+async def invalid_request(_: Request, error: RequestValidationError) -> JSONResponse:
     detail = [
         {key: value for key, value in item.items() if key != "input"}
         for item in error.errors()
@@ -474,7 +527,7 @@ def _token_sesi_valid(token: Optional[str]) -> bool:
     return hmac.compare_digest(tanda, harapan)
 
 
-def _pasang_cookie_sesi(response, request: Request) -> None:
+def _pasang_cookie_sesi(response: Response, request: Request) -> None:
     protokol = request.headers.get("x-forwarded-proto", request.url.scheme)
     https = protokol.split(",")[0].strip().lower() == "https"
     response.set_cookie(
@@ -488,7 +541,7 @@ def _pasang_cookie_sesi(response, request: Request) -> None:
     )
 
 
-def _cek_api_key(request: Request, x_api_key: Optional[str]):
+def _cek_api_key(request: Request, x_api_key: Optional[str]) -> None:
     if not API_KEY_CONFIGURED:
         raise HTTPException(
             status_code=503,
@@ -507,19 +560,19 @@ def _cek_api_key(request: Request, x_api_key: Optional[str]):
     )
 
 
-def _rencana_suara(data: dict) -> Optional[dict]:
-    if PERENCANA_SUARA is None:
+def _rencana_suara(data: JsonRecord) -> Optional[JsonRecord]:
+    if perencana_suara is None:
         return None
-    return PERENCANA_SUARA.susun(data.get("deteksi", []))
+    return perencana_suara.susun(data.get("deteksi", []))
 
 
 def _pastikan_engine_siap() -> InferensiVest:
-    if ENGINE is None:
-        raise HTTPException(status_code=503, detail=f"Engine belum siap: {ENGINE_ERROR}")
-    return ENGINE
+    if engine is None:
+        raise HTTPException(status_code=503, detail=f"Engine belum siap: {engine_error}")
+    return engine
 
 
-def _simpan_riwayat(hasil_dict: dict, sumber: str):
+def _simpan_riwayat(hasil_dict: JsonRecord, sumber: str) -> JsonRecord:
     with LATEST_TELEMETRI_LOCK:
         tele = dict(LATEST_TELEMETRI)
     if "posisi" not in hasil_dict and tele.get("fix") and tele.get("lat") is not None and tele.get("lng") is not None:
@@ -527,7 +580,7 @@ def _simpan_riwayat(hasil_dict: dict, sumber: str):
             "lat": tele["lat"],
             "lng": tele["lng"],
         }
-    entri = {
+    entri: JsonRecord = {
         "id": uuid.uuid4().hex[:12],
         "waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "sumber": sumber,
@@ -536,7 +589,7 @@ def _simpan_riwayat(hasil_dict: dict, sumber: str):
     with open(RIWAYAT_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(entri, ensure_ascii=False) + "\n")
     try:
-        sinkronisasi = _simpan_deteksi_supabase(entri)
+        sinkronisasi: JsonRecord = _simpan_deteksi_supabase(entri)
     except (OSError, ValueError, RuntimeError) as error:
         sinkronisasi = {
             "supabase_tersimpan": False,
@@ -546,7 +599,7 @@ def _simpan_riwayat(hasil_dict: dict, sumber: str):
     return entri
 
 
-def _ambil_perangkat_supabase(device_id: Optional[str] = None) -> Optional[dict[str, Any]]:
+def _ambil_perangkat_supabase(device_id: Optional[str] = None) -> Optional[JsonRecord]:
     query = {"select": "id,name", "limit": "1"}
     if device_id:
         query["id"] = f"eq.{device_id}"
@@ -560,7 +613,7 @@ def _ambil_perangkat_supabase(device_id: Optional[str] = None) -> Optional[dict[
         f"{SUPABASE_URL}/rest/v1/devices?{urllib.parse.urlencode(query)}",
         headers=headers,
     )
-    rows = None
+    rows: Any = None
     last_error: Optional[Exception] = None
     for attempt in range(3):
         try:
@@ -578,13 +631,15 @@ def _ambil_perangkat_supabase(device_id: Optional[str] = None) -> Optional[dict[
                 time.sleep(1.5)
     else:
         raise RuntimeError(f"Gagal membaca Supabase devices: {last_error}") from last_error
-    if not isinstance(rows, list):
+    if not isinstance(rows, list) or not all(
+        isinstance(row, dict) for row in cast(list[Any], rows)
+    ):
         raise RuntimeError("Supabase mengembalikan format devices yang tidak valid.")
-    return rows[0] if rows else None
+    return cast(list[JsonRecord], rows)[0] if rows else None
 
 
 def _hubungkan_perangkat_supabase() -> str:
-    global SUPABASE_DEVICE_ID
+    global supabase_device_id
 
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         raise RuntimeError(
@@ -645,7 +700,7 @@ def _hubungkan_perangkat_supabase() -> str:
         reason = getattr(error, "reason", error)
         raise RuntimeError(f"Gagal menghubungi Supabase devices: {reason}") from error
 
-    SUPABASE_DEVICE_ID = device_id
+    supabase_device_id = device_id
     return device_id
 
 
@@ -662,7 +717,7 @@ def _deduplikasi_deteksi_supabase(device_id: str) -> int:
     })
     try:
         with urlopen(UrlRequest(f"{SUPABASE_URL}/rest/v1/detections?{query}", headers=headers), timeout=8) as response:
-            detections = json.loads(response.read().decode("utf-8"))
+            detections: Any = json.loads(response.read().decode("utf-8"))
     except HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace").strip()
         raise RuntimeError(
@@ -670,8 +725,11 @@ def _deduplikasi_deteksi_supabase(device_id: str) -> int:
         ) from error
     except (URLError, json.JSONDecodeError) as error:
         raise RuntimeError(f"Gagal membaca detections Supabase untuk deduplikasi: {error}") from error
-    if not isinstance(detections, list):
+    if not isinstance(detections, list) or not all(
+        isinstance(row, dict) for row in cast(list[Any], detections)
+    ):
         raise RuntimeError("Supabase mengembalikan format detections yang tidak valid.")
+    detections = cast(list[JsonRecord], detections)
 
     latest_by_object: set[str] = set()
     duplicate_ids: list[str] = []
@@ -711,21 +769,22 @@ def _deduplikasi_deteksi_supabase(device_id: str) -> int:
     return len(duplicate_ids)
 
 
-def _simpan_deteksi_supabase(entri: dict) -> dict[str, Any]:
-    global SUPABASE_LAST_SIGNATURE, SUPABASE_LAST_SAVED_AT
-    global SUPABASE_CONNECTED, SUPABASE_CONNECTION_ERROR
+def _simpan_deteksi_supabase(entri: JsonRecord) -> JsonRecord:
+    global supabase_last_signature, supabase_last_saved_at
+    global supabase_connected, supabase_connection_error
 
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         raise RuntimeError(
             "Atur SUPABASE_URL dan SUPABASE_SERVICE_ROLE_KEY di .env server untuk menyimpan riwayat."
         )
     try:
-        device_id = str(uuid.UUID(SUPABASE_DEVICE_ID))
+        device_id = str(uuid.UUID(supabase_device_id))
     except ValueError as error:
         raise ValueError("VEST_SUPABASE_DEVICE_ID harus berupa UUID yang valid.") from error
 
-    latest_by_object = {}
-    for item in entri.get("deteksi", []):
+    latest_by_object: dict[str, JsonRecord] = {}
+    detections = cast(list[JsonRecord], entri.get("deteksi", []))
+    for item in detections:
         if item.get("ragu"):
             continue
         object_name = str(item.get("kelas", item.get("object", ""))).strip().lower()
@@ -734,7 +793,7 @@ def _simpan_deteksi_supabase(entri: dict) -> dict[str, Any]:
         current = latest_by_object.get(object_name)
         if current is None or float(item.get("urgensi", 0) or 0) > float(current.get("urgensi", 0) or 0):
             latest_by_object[object_name] = item
-    deteksi = list(latest_by_object.values())
+    deteksi: list[JsonRecord] = list(latest_by_object.values())
     if not deteksi:
         return {"supabase_tersimpan": True, "supabase_jumlah": 0}
 
@@ -744,7 +803,7 @@ def _simpan_deteksi_supabase(entri: dict) -> dict[str, Any]:
     ))
     now = time.monotonic()
     with SUPABASE_SYNC_LOCK:
-        if signature == SUPABASE_LAST_SIGNATURE and now - SUPABASE_LAST_SAVED_AT < 10:
+        if signature == supabase_last_signature and now - supabase_last_saved_at < 10:
             return {"supabase_tersimpan": True, "supabase_jumlah": 0}
 
         created_at = datetime.now().astimezone().isoformat()
@@ -754,7 +813,8 @@ def _simpan_deteksi_supabase(entri: dict) -> dict[str, Any]:
             "Content-Type": "application/json",
         }
 
-        def request_supabase(path: str, method: str, payload: Optional[list[dict]] = None,
+        def request_supabase(path: str, method: str,
+                             payload: Optional[JsonRecord | list[JsonRecord]] = None,
                              prefer: str = "return=minimal") -> Any:
             request = UrlRequest(
                 f"{SUPABASE_URL}/rest/v1/{path}",
@@ -777,19 +837,19 @@ def _simpan_deteksi_supabase(entri: dict) -> dict[str, Any]:
                 reason = getattr(error, "reason", error)
                 raise RuntimeError(f"Gagal menghubungi Supabase {path}: {reason}") from error
 
-        if not SUPABASE_CONNECTED:
+        if not supabase_connected:
             _hubungkan_perangkat_supabase()
-        SUPABASE_CONNECTED = True
-        SUPABASE_CONNECTION_ERROR = None
+        supabase_connected = True
+        supabase_connection_error = None
 
-        posisi = entri.get("posisi") or {}
+        posisi = cast(JsonRecord, entri.get("posisi") or {})
         tingkat_ke_urgensi = {
             "BAHAYA": "Tinggi",
             "WASPADA": "Sedang",
             "INFO": "Rendah",
             "AMAN": "Rendah",
         }
-        rows = [{
+        rows: list[JsonRecord] = [{
             "device_id": device_id,
             "object": str(item.get("kelas", item.get("object", "Tidak dikenal"))),
             "distance_m": float(item.get("jarak_m", item.get("distance_m", 0)) or 0),
@@ -809,9 +869,14 @@ def _simpan_deteksi_supabase(entri: dict) -> dict[str, Any]:
             "order": "created_at.desc,id.desc",
             "limit": "1000",
         })
-        existing_rows = request_supabase(f"detections?{existing_query}", "GET") or []
-        latest_id_by_object = {}
-        duplicate_ids = []
+        existing_data: Any = request_supabase(f"detections?{existing_query}", "GET") or []
+        if not isinstance(existing_data, list) or not all(
+            isinstance(existing, dict) for existing in cast(list[Any], existing_data)
+        ):
+            raise RuntimeError("Supabase mengembalikan format detections yang tidak valid.")
+        existing_rows = cast(list[JsonRecord], existing_data)
+        latest_id_by_object: dict[str, str] = {}
+        duplicate_ids: list[str] = []
         for existing in existing_rows:
             object_name = str(existing.get("object", "")).strip().lower()
             if not object_name:
@@ -821,7 +886,7 @@ def _simpan_deteksi_supabase(entri: dict) -> dict[str, Any]:
             else:
                 latest_id_by_object[object_name] = str(existing["id"])
 
-        inserts = []
+        inserts: list[JsonRecord] = []
         for row in rows:
             existing_id = latest_id_by_object.get(row["object"].lower())
             if existing_id is None:
@@ -843,19 +908,19 @@ def _simpan_deteksi_supabase(entri: dict) -> dict[str, Any]:
                 "DELETE",
             )
 
-        SUPABASE_LAST_SIGNATURE = signature
-        SUPABASE_LAST_SAVED_AT = now
+        supabase_last_signature = signature
+        supabase_last_saved_at = now
         return {"supabase_tersimpan": True, "supabase_jumlah": len(rows)}
 
 
-def _sinkronisasi_telemetri_supabase(data: dict) -> None:
-    global LATEST_GPS_LOG_AT, LAST_DEVICE_UPDATE_AT
+def _sinkronisasi_telemetri_supabase(data: JsonRecord) -> None:
+    global latest_gps_log_at, last_device_update_at
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         return
 
     now = time.time()
     try:
-        device_id = str(uuid.UUID(SUPABASE_DEVICE_ID))
+        device_id = str(uuid.UUID(supabase_device_id))
     except (ValueError, TypeError):
         return
 
@@ -865,8 +930,8 @@ def _sinkronisasi_telemetri_supabase(data: dict) -> None:
         "Content-Type": "application/json",
     }
 
-    if now - LAST_DEVICE_UPDATE_AT >= 15.0:
-        LAST_DEVICE_UPDATE_AT = now
+    if now - last_device_update_at >= 15.0:
+        last_device_update_at = now
         payload_device: dict[str, Any] = {
             "online": True,
             "last_seen": datetime.now().astimezone().isoformat(),
@@ -886,9 +951,9 @@ def _sinkronisasi_telemetri_supabase(data: dict) -> None:
             pass
 
     if data.get("fix") and data.get("lat") is not None and data.get("lng") is not None:
-        if now - LATEST_GPS_LOG_AT >= 5.0:
-            LATEST_GPS_LOG_AT = now
-            payload_gps = [{
+        if now - latest_gps_log_at >= 5.0:
+            latest_gps_log_at = now
+            payload_gps: list[JsonRecord] = [{
                 "device_id": device_id,
                 "lat": float(data["lat"]),
                 "lng": float(data["lng"]),
@@ -908,16 +973,18 @@ def _sinkronisasi_telemetri_supabase(data: dict) -> None:
                 pass
 
 
-def _baca_riwayat(limit: int):
+def _baca_riwayat(limit: int) -> JsonRecord:
     if not RIWAYAT_PATH.exists():
         return {"total": 0, "data": []}
     with open(RIWAYAT_PATH, encoding="utf-8") as f:
-        baris = [json.loads(l) for l in f if l.strip()]
+        baris: list[JsonRecord] = [
+            cast(JsonRecord, json.loads(line)) for line in f if line.strip()
+        ]
     terbaru = list(reversed(baris))[:limit]
     return {"total": len(baris), "ditampilkan": len(terbaru), "data": terbaru}
 
 
-def _catat_jalur(data: dict) -> None:
+def _catat_jalur(data: JsonRecord) -> None:
     """Simpan titik GPS baru agar peta bisa menggambar jejak perjalanan."""
     if not data.get("fix") or data.get("lat") is None or data.get("lng") is None:
         return
@@ -948,7 +1015,7 @@ def _salin_jalur() -> list[dict[str, Any]]:
         return [dict(titik) for titik in TELEMETRI_JALUR]
 
 
-def _ringkasan_telemetri(data: dict) -> dict[str, Any]:
+def _ringkasan_telemetri(data: JsonRecord) -> JsonRecord:
     now = time.time()
     updated_at = float(data.get("updated_at") or 0)
     umur = max(0.0, now - updated_at) if updated_at else None
@@ -964,9 +1031,19 @@ def _ringkasan_telemetri(data: dict) -> dict[str, Any]:
 def _alamat_ngrok_aktif(port: int) -> Optional[str]:
     try:
         with urlopen("http://127.0.0.1:4040/api/tunnels", timeout=1) as response:
-            tunnels = json.load(response).get("tunnels", [])
+            payload = json.load(response)
     except (OSError, URLError, json.JSONDecodeError):
         return None
+    if not isinstance(payload, dict):
+        return None
+    payload_record = cast(JsonRecord, payload)
+    tunnels_data = payload_record.get("tunnels")
+    if not isinstance(tunnels_data, list):
+        return None
+    tunnels_data = cast(list[Any], tunnels_data)
+    tunnels: list[JsonRecord] = [
+        cast(JsonRecord, tunnel) for tunnel in tunnels_data if isinstance(tunnel, dict)
+    ]
     return next(
         (
             tunnel["public_url"]
@@ -988,7 +1065,7 @@ def _server_lokal_aktif(port: int) -> bool:
 
 
 def _simpan_url_publik(url: str) -> Path:
-    path = ROOT / "data" / "public_url.txt"
+    path = ROOT / "data" / "runtime" / "public_url.txt"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(url + "\n", encoding="utf-8")
     return path
@@ -1025,18 +1102,18 @@ async def _baca_gambar(gambar: UploadFile) -> Image.Image:
 
 
 @app.get("/info")
-def info():
+def info() -> JsonRecord:
     return {
         "nama": "VestCare API",
         "versi": "2.0.0",
         "aplikasi_browser": "/app",
-        "engine_siap": ENGINE is not None,
-        "model_exists": MODEL_PATH.exists(),
+        "engine_siap": engine is not None,
+        "model_exists": model_path.exists(),
         "imgsz": IMGSZ,
         "conf": CONF,
         "conf_ragu": CONF_RAGU,
         "suara_browser": "klip Ardi (suara-natural-ai)",
-        "pustaka_suara_siap": PERENCANA_SUARA is not None,
+        "pustaka_suara_siap": perencana_suara is not None,
         "autentikasi": "aktif" if API_KEY_CONFIGURED else "belum dikonfigurasi",
         "dokumentasi": "/docs",
         "status": "/status",
@@ -1045,11 +1122,11 @@ def info():
 
 @app.get("/", include_in_schema=False)
 @app.get("/app", include_in_schema=False)
-def aplikasi_browser(request: Request):
+def aplikasi_browser(request: Request) -> Response:
     if not DASHBOARD_INDEX.is_file():
         raise HTTPException(
             status_code=503,
-            detail="Dashboard React belum dibangun. Jalankan `npm run build` di folder vest-care-react.",
+            detail="Dashboard React belum dibangun. Jalankan `npm run build` di folder web/react.",
         )
     response = FileResponse(
         DASHBOARD_INDEX,
@@ -1064,11 +1141,11 @@ def aplikasi_browser(request: Request):
 def pratinjau_suara(
     request: Request,
     x_api_key: Optional[str] = Header(None),
-):
+) -> JsonRecord:
     _cek_api_key(request, x_api_key)
-    if PERENCANA_SUARA is None:
+    if perencana_suara is None:
         raise HTTPException(status_code=503, detail="Pustaka suara Ardi belum tersedia.")
-    rencana = PERENCANA_SUARA.contoh()
+    rencana = perencana_suara.contoh()
     if rencana is None:
         raise HTTPException(status_code=404, detail="Klip contoh tidak tersedia.")
     return {"suara": rencana}
@@ -1079,9 +1156,9 @@ def berkas_suara(
     nama_berkas: str,
     request: Request,
     x_api_key: Optional[str] = Header(None),
-):
+) -> Response:
     _cek_api_key(request, x_api_key)
-    if PERENCANA_SUARA is None or not PERENCANA_SUARA.berkas_diizinkan(nama_berkas):
+    if perencana_suara is None or not perencana_suara.berkas_diizinkan(nama_berkas):
         raise HTTPException(status_code=404, detail="Berkas suara tidak ditemukan.")
     return FileResponse(
         SUARA_FOLDER / nama_berkas,
@@ -1091,34 +1168,35 @@ def berkas_suara(
 
 
 @app.get("/status")
-def status():
+def status() -> JsonRecord:
     return {
         "server": "VestCare API",
         "versi": "2.0.0",
-        "engine_siap": ENGINE is not None,
+        "engine_siap": engine is not None,
         "api_terproteksi": API_KEY_CONFIGURED,
-        "pustaka_suara_siap": PERENCANA_SUARA is not None,
+        "pustaka_suara_siap": perencana_suara is not None,
         "supabase_sinkronisasi_aktif": bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY),
-        "supabase_terhubung": SUPABASE_CONNECTED,
-        "supabase_device_id": SUPABASE_DEVICE_ID if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY else None,
+        "supabase_terhubung": supabase_connected,
+        "supabase_device_id": supabase_device_id if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY else None,
         "waktu_server": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
 
-@app.on_event("startup")
-async def hubungkan_supabase_saat_server_mulai():
-    global SUPABASE_CONNECTED, SUPABASE_CONNECTION_ERROR
+async def hubungkan_supabase_saat_server_mulai() -> None:
+    global supabase_connected, supabase_connection_error
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-        SUPABASE_CONNECTION_ERROR = "Konfigurasi Supabase belum lengkap."
-        print(f"[SUPABASE] {SUPABASE_CONNECTION_ERROR}")
+        supabase_connection_error = "Konfigurasi Supabase belum lengkap."
+        print(f"[SUPABASE] {supabase_connection_error}")
         return
+    device_id: str = supabase_device_id
+    removed = 0
     try:
         device_id = await run_in_threadpool(_hubungkan_perangkat_supabase)
         removed = await run_in_threadpool(_deduplikasi_deteksi_supabase, device_id)
     except ValueError as error:
-        SUPABASE_CONNECTED = False
-        SUPABASE_CONNECTION_ERROR = str(error)
-        print(f"[SUPABASE] Konfigurasi tidak valid: {SUPABASE_CONNECTION_ERROR}")
+        supabase_connected = False
+        supabase_connection_error = str(error)
+        print(f"[SUPABASE] Konfigurasi tidak valid: {supabase_connection_error}")
         return
     except RuntimeError:
         for attempt in range(3):
@@ -1129,13 +1207,13 @@ async def hubungkan_supabase_saat_server_mulai():
                 break
             except RuntimeError as error:
                 if attempt == 2:
-                    SUPABASE_CONNECTED = False
-                    SUPABASE_CONNECTION_ERROR = str(error)
-                    print(f"[SUPABASE] Koneksi saat startup gagal: {SUPABASE_CONNECTION_ERROR}")
+                    supabase_connected = False
+                    supabase_connection_error = str(error)
+                    print(f"[SUPABASE] Koneksi saat startup gagal: {supabase_connection_error}")
                     return
 
-    SUPABASE_CONNECTED = True
-    SUPABASE_CONNECTION_ERROR = None
+    supabase_connected = True
+    supabase_connection_error = None
     print(
         f"[SUPABASE] Terhubung. Perangkat server: {device_id}; "
         f"duplikat kelas dihapus: {removed}"
@@ -1162,16 +1240,18 @@ class MasukanTelemetri(BaseModel):
 async def telemetri_masuk(
     m: MasukanTelemetri,
     background_tasks: BackgroundTasks,
-):
+) -> JsonRecord:
     """Public telemetry endpoint for Wemos devices configured with Wi-Fi only."""
     global LATEST_TELEMETRI
     now = time.time()
     gps_fix = bool(m.fix and m.lat is not None and m.lng is not None)
-    update_data = {
+    lat = m.lat
+    lng = m.lng
+    update_data: JsonRecord = {
         "jarak": float(m.jarak) if m.jarak is not None and m.valid_jarak else None,
         "valid_jarak": bool(m.valid_jarak),
-        "lat": float(m.lat) if gps_fix else None,
-        "lng": float(m.lng) if gps_fix else None,
+        "lat": float(lat) if gps_fix and lat is not None else None,
+        "lng": float(lng) if gps_fix and lng is not None else None,
         "alt": float(m.alt) if m.alt is not None else None,
         "spd": float(m.spd) if m.spd is not None else None,
         "sat": int(m.sat or 0),
@@ -1200,7 +1280,7 @@ async def telemetri_masuk(
 
 @app.get("/telemetri")
 @app.get("/api/telemetri")
-def telemetri_status(request: Request, x_api_key: Optional[str] = Header(None)):
+def telemetri_status() -> JsonRecord:
     with LATEST_TELEMETRI_LOCK:
         data = dict(LATEST_TELEMETRI)
     return _ringkasan_telemetri(data)
@@ -1212,13 +1292,13 @@ async def telemetri_stream(
     request: Request,
     x_api_key: Optional[str] = Header(None),
     api_key: Optional[str] = Query(None, description="API key untuk klien non-browser"),
-):
+) -> StreamingResponse:
     """Server-Sent Events: dorong telemetri Wemos ke dashboard seketika."""
     if API_KEY_CONFIGURED:
         _cek_api_key(request, x_api_key or api_key)
 
-    async def peristiwa():
-        signature_terakhir: Optional[tuple] = None
+    async def peristiwa() -> AsyncIterator[str]:
+        signature_terakhir: Optional[tuple[Any, ...]] = None
         kirim_terakhir = 0.0
         detak_terakhir = 0.0
         while True:
@@ -1258,7 +1338,7 @@ async def telemetri_stream(
 
 
 @app.get("/config")
-def konfigurasi_publik():
+def konfigurasi_publik() -> JsonRecord:
     """Konfigurasi publik dashboard (kunci Google Maps memang kunci browser)."""
     return {
         "versi": "2.0.0",
@@ -1272,20 +1352,20 @@ def konfigurasi_publik():
 
 
 @app.get("/dashboard/data")
-def dashboard_data(request: Request, x_api_key: Optional[str] = Header(None)):
+def dashboard_data(request: Request, x_api_key: Optional[str] = Header(None)) -> JsonRecord:
     _cek_api_key(request, x_api_key)
     with LATEST_TELEMETRI_LOCK:
         live_telemetri = dict(LATEST_TELEMETRI)
     is_live_online = (time.time() - live_telemetri.get("updated_at", 0)) < 15.0
 
     try:
-        device_id = str(uuid.UUID(SUPABASE_DEVICE_ID))
+        device_id = str(uuid.UUID(supabase_device_id))
     except (ValueError, TypeError):
         device_id = SUPABASE_DEVICE_FALLBACK
 
-    device_rows = []
-    detections = []
-    gps_rows = []
+    device_rows: list[JsonRecord] = []
+    detections: list[JsonRecord] = []
+    gps_rows: list[JsonRecord] = []
 
     if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
         headers = {
@@ -1293,14 +1373,18 @@ def dashboard_data(request: Request, x_api_key: Optional[str] = Header(None)):
             "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
         }
 
-        def baca_tabel(path: str) -> list[dict[str, Any]]:
+        def baca_tabel(path: str) -> list[JsonRecord]:
             url = f"{SUPABASE_URL}/rest/v1/{path}"
             try:
                 with urlopen(UrlRequest(url, headers=headers), timeout=8) as response:
-                    data = json.loads(response.read().decode("utf-8"))
+                    data: Any = json.loads(response.read().decode("utf-8"))
             except Exception:
                 return []
-            return data if isinstance(data, list) else []
+            if not isinstance(data, list) or not all(
+                isinstance(row, dict) for row in cast(list[Any], data)
+            ):
+                return []
+            return cast(list[JsonRecord], data)
 
         device_rows = baca_tabel(
             f"devices?id=eq.{device_id}&select=id,name,student_name,school,battery,online,last_seen&limit=1"
@@ -1315,7 +1399,7 @@ def dashboard_data(request: Request, x_api_key: Optional[str] = Header(None)):
             "&select=id,device_id,lat,lng,accuracy,created_at&order=created_at.desc&limit=1"
         )
 
-    device_result = device_rows[0] if device_rows else {
+    device_result: JsonRecord = device_rows[0] if device_rows else {
         "id": device_id,
         "name": "VestCare Rompi",
         "student_name": "Siswa VestCare",
@@ -1329,7 +1413,7 @@ def dashboard_data(request: Request, x_api_key: Optional[str] = Header(None)):
         if live_telemetri.get("battery") is not None:
             device_result["battery"] = live_telemetri["battery"]
 
-    gps_result = gps_rows[0] if gps_rows and not is_live_online else None
+    gps_result: Optional[JsonRecord] = gps_rows[0] if gps_rows and not is_live_online else None
     if live_telemetri.get("fix") and live_telemetri.get("lat") is not None and live_telemetri.get("lng") is not None:
         gps_result = {
             "id": "live-wemos",
@@ -1358,7 +1442,7 @@ async def deteksi(
     jarak_m: Optional[float] = Form(None, ge=0.03, le=3.0, description="jarak ultrasonik depan dalam METER"),
     mode_realtime: bool = Form(False, description="lewati penyimpanan riwayat untuk frame kamera realtime"),
     x_api_key: Optional[str] = Header(None),
-):
+) -> JSONResponse:
     _cek_api_key(request, x_api_key)
     with LATEST_TELEMETRI_LOCK:
         tele = dict(LATEST_TELEMETRI)
@@ -1388,7 +1472,7 @@ async def deteksi_suara(
     gambar: UploadFile = File(..., description="file gambar (jpg/png) dari rompi/klien"),
     jarak_m: Optional[float] = Form(None, ge=0.03, le=3.0, description="jarak ultrasonik depan dalam METER"),
     x_api_key: Optional[str] = Header(None),
-):
+) -> JSONResponse:
     _cek_api_key(request, x_api_key)
     with LATEST_TELEMETRI_LOCK:
         tele = dict(LATEST_TELEMETRI)
@@ -1416,7 +1500,11 @@ class MasukanFuzzy(BaseModel):
 
 
 @app.post("/peringatan")
-def peringatan(m: MasukanFuzzy, request: Request, x_api_key: Optional[str] = Header(None)):
+def peringatan(
+    m: MasukanFuzzy,
+    request: Request,
+    x_api_key: Optional[str] = Header(None),
+) -> JsonRecord:
     _cek_api_key(request, x_api_key)
     from fuzzysugeno import hitung_peringatan
     return {"skor_risiko": m.skor_risiko, "jarak_m": m.jarak_m,
@@ -1428,7 +1516,7 @@ def riwayat(
     request: Request,
     limit: int = Query(20, ge=1, le=500, description="jumlah entri terakhir yang diambil"),
     x_api_key: Optional[str] = Header(None),
-):
+) -> JsonRecord:
     _cek_api_key(request, x_api_key)
     return _baca_riwayat(limit)
 
@@ -1444,8 +1532,8 @@ if __name__ == "__main__":
         raise SystemExit(
             "VEST_API_KEY belum aman/valid. Isi .env dengan kunci acak minimal 32 karakter."
         )
-    if ENGINE is None:
-        raise SystemExit(f"Engine deteksi gagal dimuat: {ENGINE_ERROR}")
+    if engine is None:
+        raise SystemExit(f"Engine deteksi gagal dimuat: {engine_error}")
 
     executable = shutil.which(os.environ.get("NGROK_EXECUTABLE", "ngrok"))
 

@@ -26,7 +26,7 @@ venv.bak/
 .DS_Store
 Thumbs.db
 
-# Logs (kecuali yang ingin di-archive, simpan di folder runs/ dan root *.log jika diperlukan)
+# Logs (kecuali yang ingin di-archive di data/results/)
 *.log
 
 # OS
@@ -61,9 +61,26 @@ data/
 .env.local
 .env.*.local
 
-# Log mentah training dan evaluasi yang disertakan sebagai bukti hasil
-!training_semua_*.log
-!runs/segment/runs/semua_kelas_yolo26n*/training.log
-!runs/segment/runs/semua_kelas_yolo26n*/raw/training.log
-!runs/segment/runs/semua_kelas_yolo26n*/evaluation/evaluation_*.log
-!runs/segment/runs/semua_kelas_yolo26n*/evaluation/final/evaluation_*.log
+# Data terpilih yang sebelumnya sudah dilacak, kini berada pada kategori data/
+!data/
+data/*
+!data/archive/
+data/archive/*
+!data/archive/chace/
+data/archive/chace/*
+!data/archive/chace/suara-natural-ai-legacy/
+!data/archive/chace/suara-natural-ai-legacy/**
+!data/datasets/
+data/datasets/*
+!data/datasets/penunjang/
+data/datasets/penunjang/*
+!data/datasets/penunjang/*.zip
+!data/results/
+data/results/*
+!data/results/logs/
+data/results/logs/*
+!data/results/logs/training_semua_20261107_154452_851599.log
+!data/results/run_legacy/
+data/results/run_legacy/*
+!data/results/run_legacy/run_train1/
+!data/results/run_legacy/run_train1/**

@@ -255,6 +255,16 @@ export default function CameraCapture({ onDetections }) {
   useEffect(() => {
     if (status !== "camera") return undefined;
 
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [status]);
+
+  useEffect(() => {
+    if (status !== "camera") return undefined;
+
     let active = true;
     let timer;
     let requestController;
@@ -282,7 +292,7 @@ export default function CameraCapture({ onDetections }) {
       context.clearRect(0, 0, width, height);
       if (!video.videoWidth || !video.videoHeight) return;
 
-      const scale = Math.min(width / video.videoWidth, height / video.videoHeight);
+      const scale = Math.max(width / video.videoWidth, height / video.videoHeight);
       const offsetX = (width - video.videoWidth * scale) / 2;
       const offsetY = (height - video.videoHeight * scale) / 2;
       context.font = "600 13px system-ui, sans-serif";
@@ -543,13 +553,13 @@ export default function CameraCapture({ onDetections }) {
         </div>
       )}
       {status === "camera" && (
-        <div className="vc-camera-backdrop" role="dialog" aria-modal="true" aria-label="Kamera">
-          <div className="vc-camera-dialog">
-            <div className="flex items-center justify-between mb-4">
+        <div className="vc-camera-backdrop vc-camera-backdrop--fullscreen" role="dialog" aria-modal="true" aria-label="Kamera">
+          <div className="vc-camera-dialog vc-camera-dialog--fullscreen">
+            <div className="vc-camera-header flex items-center justify-between mb-4">
               <h2 className="mb-0 text-lg font-bold text-slate-800">Ambil foto deteksi</h2>
               <button type="button" className="vc-camera-close" onClick={closePreview} aria-label="Tutup">×</button>
             </div>
-            <div className="vc-camera-stage">
+            <div className="vc-camera-stage vc-camera-stage--fullscreen">
               <video ref={videoRef} className="vc-camera-preview" autoPlay playsInline muted />
               <canvas ref={boxesRef} className="vc-camera-boxes" aria-hidden="true" />
               <span className="vc-camera-count" role="status">
@@ -570,7 +580,7 @@ export default function CameraCapture({ onDetections }) {
                 ))}
               </ul>
             )}
-            <div className="flex justify-end gap-2 mt-4">
+            <div className="vc-camera-footer flex justify-end gap-2 mt-4">
               <button type="button" className="vc-camera-secondary" onClick={closePreview}>Batal</button>
               <span className="vc-camera-live-status">● Deteksi otomatis aktif</span>
             </div>

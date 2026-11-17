@@ -11,7 +11,7 @@ Sistem peringatan rintangan untuk rompi cerdas berbasis segmentasi YOLO26n, logi
 | Model visi | YOLO26n-seg, 5 kelas, keluaran bounding box dan mask |
 | Logika keputusan | Fuzzy Sugeno orde-nol dengan 26 aturan |
 | Keluaran peringatan | Level AMAN, INFO, WASPADA, BAHAYA; getar; instruksi suara |
-| Suara | Klip Bahasa Indonesia dari `suara-natural-ai/cache_ardi` |
+| Suara | Klip Bahasa Indonesia dari `data/runtime/audio/cache_ardi` |
 | API | FastAPI, autentikasi API key atau cookie sesi HttpOnly |
 | Web | Dashboard React + Vite yang disajikan langsung oleh FastAPI |
 | Penyimpanan | Riwayat lokal JSONL dan sinkronisasi ke Supabase |
@@ -22,7 +22,7 @@ Sistem peringatan rintangan untuk rompi cerdas berbasis segmentasi YOLO26n, logi
 Run yang dipublikasikan:
 
 ```text
-runs/segment/runs/semua_kelas_yolo26n_20261107_154452/
+data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/
 ```
 
 ### Konfigurasi training
@@ -41,7 +41,7 @@ runs/segment/runs/semua_kelas_yolo26n_20261107_154452/
 | Dataset validasi | 312 gambar |
 | Overlap train dan validasi | 0 gambar |
 | Waktu training | 29.825,4 detik atau sekitar 8,28 jam |
-| Checkpoint terbaik | `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/weights/best.pt` |
+| Checkpoint terbaik | `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/weights/best.pt` |
 
 ### Hyperparameter lengkap run
 
@@ -91,8 +91,8 @@ Run terbaru memakai pembagian aktual 90% train dan 10% validasi, bukan 80% train
 | Deterministic | `True` |
 | Cache dataset | `False` |
 | AMP | `True` |
-| Manifest train | `runs/dataset_splits/train.txt` |
-| Manifest validasi | `runs/dataset_splits/val.txt` |
+| Manifest train | `data/results/runs/dataset_splits/train.txt` |
+| Manifest validasi | `data/results/runs/dataset_splits/val.txt` |
 
 Cara split bekerja:
 
@@ -293,10 +293,10 @@ Hasil quality gate adalah `passed: false` dan `deployed: false`. Pipeline tidak 
 Laporan lengkap tersedia di:
 
 ```text
-runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/training_report.txt
-runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/training_report.json
-runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/val_class_metrics.csv
-runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/
+data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/training_report.txt
+data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/training_report.json
+data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/val_class_metrics.csv
+data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/
 ```
 
 ## Alur kerja fuzzy logic
@@ -392,13 +392,13 @@ Jika klip gerak belum tersedia, sistem memakai fallback `benda_{kelas}_{arah}_ne
 
 ### Alur dari kamera sampai dashboard
 
-1. Browser membuka `/` atau `/app`. FastAPI menyajikan build React dari `vest-care-react/dist/`.
+1. Browser membuka `/` atau `/app`. FastAPI menyajikan build React dari `web/react/dist/`.
 2. Jika `VEST_API_KEY` aktif, server memasang cookie sesi HttpOnly bernama `vestcare_sesi`.
 3. Komponen `CameraCapture` membuka kamera dan mengirim frame ke `POST /deteksi` sekitar satu kali per detik.
 4. Setiap request divalidasi dengan `X-API-Key` atau cookie sesi. Ukuran gambar dibatasi 10 MB dan resolusi 40 megapiksel.
 5. Server menjalankan YOLO26n-seg, fuzzy Sugeno, pelacak gerak, dan perencana suara.
 6. Respons berisi daftar deteksi, level tertinggi, urgensi, status ragu, dan rencana suara.
-7. Server menulis riwayat ke `data/riwayat.jsonl`.
+7. Server menulis riwayat ke `data/runtime/riwayat.jsonl`.
 8. Server menyinkronkan deteksi ke Supabase melalui REST API dengan service-role key.
 9. Saat startup, server memakai perangkat yang sudah tercatat di tabel `devices` (atau `VEST_SUPABASE_DEVICE_ID` bila diisi); perangkat baru hanya dibuat jika belum ada.
 10. Untuk setiap frame, server mengambil baris terakhir per objek, memperbarui baris yang sudah ada dengan `PATCH`, menambah baris baru dengan `POST`, dan menghapus duplikat dengan `DELETE`.
@@ -416,7 +416,7 @@ Jika klip gerak belum tersedia, sistem memakai fallback `benda_{kelas}_{arah}_ne
 | Inferensi | `InferensiVest` | Gambar RGB | Box, mask, confidence | Memori server |
 | Keputusan | `fuzzysugeno.py` | Box, mask, jarak | Deteksi, urgensi, level, getar | Memori server |
 | Suara | `PerencanaSuara` | Daftar deteksi | Rencana segmen dan teks | Memori server |
-| Riwayat lokal | `_simpan_riwayat` | Hasil deteksi | Baris JSONL | `data/riwayat.jsonl` |
+| Riwayat lokal | `_simpan_riwayat` | Hasil deteksi | Baris JSONL | `data/runtime/riwayat.jsonl` |
 | Sinkronisasi | `_simpan_deteksi_supabase` | Hasil deteksi | Baris `detections` | Supabase REST |
 | Baca web | `useVestData.js` | `GET /dashboard/data`, SSE `/api/telemetri/stream`, `GET /riwayat` | State dashboard realtime | HTTP same-origin + cookie sesi |
 | Fallback web | FastAPI | Perangkat atau Supabase kosong | Data dashboard | `/riwayat` dan polling `/api/telemetri` |
@@ -453,8 +453,8 @@ Backend, dibaca dari `.env` root:
 | `VEST_IMGSZ` | Ukuran inferensi, default 512 |
 | `VEST_CONF` | Ambang confidence deteksi, default 0,35 |
 | `VEST_CONF_RAGU` | Ambang penanda ragu, default 0,50 |
-| `VEST_SUARA_FOLDER` | Folder pustaka suara, default `suara-natural-ai/cache_ardi` |
-| `VEST_RIWAYAT_PATH` | Path riwayat JSONL, default `data/riwayat.jsonl` |
+| `VEST_SUARA_FOLDER` | Folder pustaka suara, default `data/runtime/audio/cache_ardi` |
+| `VEST_RIWAYAT_PATH` | Path riwayat JSONL, default `data/runtime/riwayat.jsonl` |
 | `VEST_HOST` | Host server, default `127.0.0.1` |
 | `VEST_PORT` | Port server, default `8080` |
 | `GOOGLE_MAPS_API_KEY` | Kunci Google Maps JavaScript API untuk marker, jejak, dan objek realtime; bila kosong dashboard memakai mode embed |
@@ -465,7 +465,7 @@ Backend, dibaca dari `.env` root:
 | `SUPABASE_SERVICE_ROLE_KEY` | Service-role key untuk penulisan backend |
 | `VEST_SUPABASE_DEVICE_ID` | UUID perangkat nyata di tabel `devices`; bila kosong, server memakai perangkat pertama yang sudah ada |
 
-Frontend, dibaca dari `vest-care-react/.env.local`:
+Frontend, dibaca dari `web/react/.env.local`:
 
 | Kunci | Fungsi |
 |---|---|
@@ -507,13 +507,17 @@ Jika `VEST_API_KEY` aktif, sertakan header `X-API-Key` pada setiap request yang 
 | `start_eval.py` | Evaluasi model per kelas dan per varian dataset |
 | `dataset_gabungan.yaml` | Konfigurasi dataset gabungan 5 kelas |
 | `models/best.pt` | Bobot aktif yang dipakai server |
-| `vest-care-react/` | Dashboard React, hasil build disajikan dari `vest-care-react/dist/` |
-| `vest-care-react/src/useVestData.js` | Pembacaan `/dashboard/data`, SSE telemetri, dan fallback `/riwayat` |
-| `vest-care-react/src/components/CameraCapture.jsx` | Kamera, pengiriman frame, kotak objek, dan pemutaran suara |
-| `vest-care-react/src/components/GpsMap.jsx` | Peta Google Maps realtime, marker objek, jejak GPS, dan panel telemetri Wemos |
-| `suara-natural-ai/` | Pustaka klip suara, perakit kalimat, dan contoh integrasi |
-| `runs/segment/runs/` | Artefak training, laporan, dan evaluasi |
-| `data/riwayat.jsonl` | Riwayat deteksi lokal, tidak di-commit |
+| `web/react/` | Dashboard React, hasil build disajikan dari `web/react/dist/` |
+| `web/react/src/useVestData.js` | Pembacaan `/dashboard/data`, SSE telemetri, dan fallback `/riwayat` |
+| `web/react/src/components/CameraCapture.jsx` | Kamera, pengiriman frame, kotak objek, dan pemutaran suara |
+| `web/react/src/components/GpsMap.jsx` | Peta Google Maps realtime, marker objek, jejak GPS, dan panel telemetri Wemos |
+| `library/suara-natural-ai/` | Pustaka klip suara, perakit kalimat, dan contoh integrasi |
+| `data/results/runs/segment/runs/` | Artefak training, laporan, dan evaluasi |
+| `data/datasets/` | Dataset sumber, utama, dan penunjang |
+| `data/results/` | Hasil training, evaluasi, split, dan log |
+| `data/runtime/` | Riwayat server, URL publik, dan cache audio |
+| `hardware/arduino/` | Firmware Wemos |
+| `data/runtime/riwayat.jsonl` | Riwayat deteksi lokal, tidak di-commit |
 
 ## Cara menjalankan
 
@@ -521,7 +525,7 @@ Jika `VEST_API_KEY` aktif, sertakan header `X-API-Key` pada setiap request yang 
 
 - Python 3.10 atau lebih baru dan virtual environment `.venv`.
 - Dependensi utama: `ultralytics`, `fastapi`, `uvicorn`, `pillow`, `numpy`, `python-multipart`.
-- Untuk suara: `pip install -r suara-natural-ai/requirements_pemutar.txt`, membutuhkan `pygame-ce`.
+- Untuk suara: `pip install -r library/suara-natural-ai/requirements_pemutar.txt`, membutuhkan `pygame-ce`.
 - Untuk tunnel publik: `ngrok` tersedia di `PATH`.
 - Node.js dan npm untuk membangun dashboard React.
 
@@ -571,21 +575,21 @@ VEST_SUPABASE_DEVICE_ID=<uuid-perangkat-di-tabel-devices>
 Jalankan:
 
 ```powershell
-cd vest-care-react
+cd web/react
 npm install
 npm run build
-cd ..
+cd ..\..
 python server_rest_api.py
 ```
 
-Dengan `VEST_HOST=0.0.0.0`, server dapat menerima koneksi dari Wemos pada jaringan Wi-Fi yang sama. URL utama ngrok langsung menampilkan dashboard React, sedangkan `/app` tetap menjadi alias. Dokumentasi interaktif tersedia di `/docs`. URL publik terakhir juga disimpan di `data/public_url.txt`. Build dashboard perlu diperbarui dengan `npm run build` setiap kali source React berubah.
+Dengan `VEST_HOST=0.0.0.0`, server dapat menerima koneksi dari Wemos pada jaringan Wi-Fi yang sama. URL utama ngrok langsung menampilkan dashboard React, sedangkan `/app` tetap menjadi alias. Dokumentasi interaktif tersedia di `/docs`. URL publik terakhir juga disimpan di `data/runtime/public_url.txt`. Build dashboard perlu diperbarui dengan `npm run build` setiap kali source React berubah.
 
 Peta dashboard memakai Google Maps. Isi `GOOGLE_MAPS_API_KEY` pada `.env` root dengan kunci Google Maps JavaScript API yang dibatasi untuk domain dashboard/ngrok. Kunci dibaca saat server berjalan melalui `/config`, jadi mengganti kunci tidak memerlukan build ulang. Bila kunci kosong atau ditolak, dashboard otomatis memakai Google Maps mode embed agar lokasi Wemos tetap terlihat.
 
 ### Menghubungkan Wemos ke server dan dashboard
 
 1. Sambungkan komputer/server dan Wemos ke jaringan Wi-Fi yang sama. Jalankan server dengan `VEST_HOST=0.0.0.0` dan port yang sesuai.
-2. Saat portal konfigurasi `Wemos_Setup` muncul, isi Wi-Fi saja. URL server saat ini ditetapkan di `arduino/wemos/wemos.ino`; jika alamat ngrok berubah, perbarui `SERVER_URL` dan flash ulang firmware.
+2. Saat portal konfigurasi `Wemos_Setup` muncul, isi Wi-Fi saja. URL server saat ini ditetapkan di `hardware/arduino/wemos/wemos.ino`; jika alamat ngrok berubah, perbarui `SERVER_URL` dan flash ulang firmware.
 3. Endpoint `POST /api/telemetri` menerima kiriman publik tanpa `VEST_API_KEY` agar Wemos tidak memerlukan konfigurasi key. Jangan gunakan endpoint ini untuk data sensitif: siapa pun yang mengetahui URL server dapat mengirim telemetri palsu. Endpoint API lain tetap mengikuti autentikasi server.
 4. Wemos mengirim jarak ultrasonik dan GPS melalui HTTPS ke `/api/telemetri` setiap 5 detik. Sertifikat TLS diverifikasi dan waktu sertifikat disinkronkan lewat NTP; jangan matikan verifikasi TLS. Dashboard di URL ngrok yang sama akan menampilkan status perangkat dan lokasi. Pada kunjungan browser pertama ke domain ngrok gratis, buka/konfirmasi halaman peringatan ngrok terlebih dahulu. Periksa Serial Monitor 115200 baud untuk status HTTP.
 
@@ -594,42 +598,42 @@ Wemos hanya menyimpan kredensial Wi-Fi melalui WiFiManager. Firmware memverifika
 ### Deteksi dari kamera tanpa dashboard
 
 ```powershell
-python suara-natural-ai/jalankan_fuzzy.py --sumber 0
+python library/suara-natural-ai/jalankan_fuzzy.py --sumber 0
 ```
 
-Gunakan `--sumber` untuk indeks kamera atau path video. Contoh integrasi tanpa kamera tersedia di `suara-natural-ai/contoh_integrasi.py`.
+Gunakan `--sumber` untuk indeks kamera atau path video. Contoh integrasi tanpa kamera tersedia di `library/suara-natural-ai/contoh_integrasi.py`.
 
 ## Artefak dan log
 
 | Artefak | Path |
 |---|---|
-| Log training root | `training_semua_20261107_154452_851599.log` |
-| Log run | `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/training.log` |
-| Log mentah | `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/raw/training.log` |
-| Laporan training | `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/training_report.txt` |
-| Laporan JSON | `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/training_report.json` |
-| Metrik per kelas | `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/val_class_metrics.csv` |
-| Evaluasi akhir | `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/` |
-| Log evaluasi | `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/evaluation_20261108_000253.log` |
-| Ringkasan akurasi | `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/laporan_akurasi.txt` |
-| Kecepatan | `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/kecepatan.json` |
-| Bobot terbaik | `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/weights/best.pt` |
+| Log training root | `data/results/logs/training_semua_20261107_154452_851599.log` |
+| Log run | `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/training.log` |
+| Log mentah | `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/raw/training.log` |
+| Laporan training | `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/training_report.txt` |
+| Laporan JSON | `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/training_report.json` |
+| Metrik per kelas | `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/val_class_metrics.csv` |
+| Evaluasi akhir | `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/` |
+| Log evaluasi | `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/evaluation_20261108_000253.log` |
+| Ringkasan akurasi | `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/laporan_akurasi.txt` |
+| Kecepatan | `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/kecepatan.json` |
+| Bobot terbaik | `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/weights/best.pt` |
 
 ### Ukuran artefak mentah
 
 | File | Ukuran byte | Ukuran perkiraan |
 |---|---:|---:|
-| `training_semua_20261107_154452_851599.log` | 12.800.220 | 12,2 MiB |
-| `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/training.log` | 12.800.220 | 12,2 MiB |
-| `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/raw/training.log` | 12.800.220 | 12,2 MiB |
-| `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/results.csv` | 18.044 | 17,6 KiB |
-| `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/raw/results.csv` | 18.044 | 17,6 KiB |
-| `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/training_report.json` | 11.019 | 10,8 KiB |
-| `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/training_report.txt` | 1.911 | 1,9 KiB |
-| `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/val_class_metrics.csv` | 906 | 0,9 KiB |
-| `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/evaluation_20261108_000253.log` | 33.212 | 32,4 KiB |
-| `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/ringkasan_test.json` | 7.282 | 7,1 KiB |
-| `runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/kecepatan.json` | 191 | 0,2 KiB |
+| `data/results/logs/training_semua_20261107_154452_851599.log` | 12.800.220 | 12,2 MiB |
+| `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/training.log` | 12.800.220 | 12,2 MiB |
+| `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/raw/training.log` | 12.800.220 | 12,2 MiB |
+| `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/results.csv` | 18.044 | 17,6 KiB |
+| `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/raw/results.csv` | 18.044 | 17,6 KiB |
+| `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/training_report.json` | 11.019 | 10,8 KiB |
+| `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/training_report.txt` | 1.911 | 1,9 KiB |
+| `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/val_class_metrics.csv` | 906 | 0,9 KiB |
+| `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/evaluation_20261108_000253.log` | 33.212 | 32,4 KiB |
+| `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/ringkasan_test.json` | 7.282 | 7,1 KiB |
+| `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/kecepatan.json` | 191 | 0,2 KiB |
 
 ### Contoh baris log mentah
 

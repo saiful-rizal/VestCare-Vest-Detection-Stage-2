@@ -1,10 +1,14 @@
 """Jalankan pipeline evaluasi final (tahap 08) dengan GPU secara default."""
+import argparse
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 import os
 import subprocess
 import sys
+from collections import defaultdict
+from collections.abc import Generator, Mapping
+from typing import Any, Optional, TextIO, cast
 
 
 ROOT = Path(__file__).resolve().parent
@@ -25,7 +29,6 @@ if not any(arg == "--device" or arg.startswith("--device=") for arg in sys.argv[
 os.chdir(ROOT)
 
 
-import argparse
 import csv
 import json
 import logging
@@ -35,8 +38,36 @@ import statistics
 import tempfile
 import time
 import yaml
-from collections import defaultdict
-from pathlib import Path
+
+JsonRecord = dict[str, Any]
+
+
+class EvalArgs(argparse.Namespace):
+    dataset: Path
+    splits_dir: Optional[Path]
+    hasil07: Path
+    split: Optional[str]
+    model: Optional[Path]
+    out: Path
+    imgsz: int
+    batch: int
+    conf: float
+    contoh: int
+    n_kecepatan: int
+    device: Optional[str]
+
+
+def _baca_kelas(raw_names: Any, source: str | Path) -> dict[int, str]:
+    if isinstance(raw_names, list):
+        if not all(isinstance(name, str) for name in cast(list[Any], raw_names)):
+            raise ValueError(f"Daftar kelas tidak valid di {source}")
+        return dict(enumerate(cast(list[str], raw_names)))
+    if isinstance(raw_names, dict):
+        return {
+            int(class_id): str(name)
+            for class_id, name in cast(dict[Any, Any], raw_names).items()
+        }
+    raise ValueError(f"Daftar kelas tidak valid di {source}")
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 EXPECTED_CLASSES = {
@@ -54,44 +85,44 @@ METRIC_COLUMNS = [
 
 
 class Tee:
-    def __init__(self, *streams):
-        self.streams = streams
+    def __init__(self, *streams: TextIO) -> None:
+        self.streams: tuple[TextIO, ...] = streams
 
-    def write(self, text):
+    def write(self, text: str) -> int:
         for stream in self.streams:
             stream.write(text)
         return len(text)
 
-    def flush(self):
+    def flush(self) -> None:
         for stream in self.streams:
             stream.flush()
 
-    def isatty(self):
-        return any(getattr(stream, "isatty", lambda: False)() for stream in self.streams)
+    def isatty(self) -> bool:
+        return any(stream.isatty() for stream in self.streams)
 
-    def fileno(self):
+    def fileno(self) -> int:
         return self.streams[0].fileno()
 
     @property
-    def encoding(self):
-        return getattr(self.streams[0], "encoding", "utf-8")
+    def encoding(self) -> str:
+        return self.streams[0].encoding or "utf-8"
 
 
 @contextmanager
-def capture_console(log_path):
+def capture_console(log_path: str | Path) -> Generator[None, None, None]:
     from ultralytics.utils import LOGGER
 
     original_stdout, original_stderr = sys.stdout, sys.stderr
-    handlers = [
-        (handler, handler.stream)
-        for handler in LOGGER.handlers
-        if isinstance(handler, logging.StreamHandler)
-    ]
+    handlers: list[tuple[logging.StreamHandler[TextIO], TextIO]] = []
+    for raw_handler in LOGGER.handlers:
+        if isinstance(raw_handler, logging.StreamHandler):
+            handler = cast(logging.StreamHandler[TextIO], raw_handler)
+            handlers.append((handler, handler.stream))
     with Path(log_path).open("w", encoding="utf-8", buffering=1) as log_file:
         stdout, stderr = Tee(original_stdout, log_file), Tee(original_stderr, log_file)
         sys.stdout, sys.stderr = stdout, stderr
         for handler, _ in handlers:
-            handler.setStream(stdout)
+            handler.setStream(cast(TextIO, stdout))
         try:
             yield
         finally:
@@ -102,20 +133,17 @@ def capture_console(log_path):
                 handler.setStream(stream)
 
 
-def f1(precision, recall):
+def f1(precision: float, recall: float) -> float:
     return 2 * precision * recall / (precision + recall) if precision + recall else 0.0
 
 
-def read_dataset(data_yaml):
+def read_dataset(data_yaml: str | Path) -> tuple[JsonRecord, dict[int, str]]:
     with Path(data_yaml).open(encoding="utf-8") as file:
-        data = yaml.safe_load(file) or {}
-    names = data.get("names")
-    if isinstance(names, list):
-        names = dict(enumerate(names))
-    elif isinstance(names, dict):
-        names = {int(class_id): str(name) for class_id, name in names.items()}
-    else:
-        raise ValueError(f"Daftar kelas tidak valid di {data_yaml}")
+        raw_data: Any = yaml.safe_load(file) or {}
+    if not isinstance(raw_data, dict):
+        raise ValueError(f"Konfigurasi dataset tidak valid di {data_yaml}")
+    data = cast(JsonRecord, raw_data)
+    names = _baca_kelas(data.get("names"), data_yaml)
     if names not in (EXPECTED_CLASSES, {**EXPECTED_CLASSES, **INTERNAL_CLASSES}):
         raise ValueError(
             f"Dataset harus memakai kelas target {EXPECTED_CLASSES} "
@@ -124,28 +152,35 @@ def read_dataset(data_yaml):
     return data, names
 
 
-def list_split_images(data_yaml, split):
+def list_split_images(data_yaml: str | Path, split: str) -> list[Path]:
     data, _ = read_dataset(data_yaml)
     root = Path(data.get("path", Path(data_yaml).parent))
     if not root.is_absolute():
         root = Path(data_yaml).parent / root
-    sources = data.get(split)
-    if sources is None:
+    raw_sources: Any = data.get(split)
+    if raw_sources is None:
         raise ValueError(f"Split '{split}' tidak tersedia di {data_yaml}")
-    sources = sources if isinstance(sources, list) else [sources]
-    images = set()
+    sources: list[Any] = (
+        cast(list[Any], raw_sources) if isinstance(raw_sources, list) else [raw_sources]
+    )
+    if not all(isinstance(source, (str, Path)) for source in sources):
+        raise ValueError(f"Path split '{split}' tidak valid di {data_yaml}")
+    sources = cast(list[str | Path], sources)
+    images: set[Path] = set()
     for source in sources:
         path = Path(source)
         if not path.is_absolute():
             path = root / path
         path = path.resolve()
         if path.is_file():
-            paths = (
-                Path(line.strip()) if Path(line.strip()).is_absolute() else path.parent / line.strip()
-                for line in path.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            )
-            images.update(image.resolve() for image in paths)
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    candidate = Path(line.strip())
+                    images.add(
+                        candidate.resolve()
+                        if candidate.is_absolute()
+                        else (path.parent / candidate).resolve()
+                    )
         elif path.is_dir():
             images.update(
                 image.resolve() for image in path.iterdir()
@@ -159,16 +194,16 @@ def list_split_images(data_yaml, split):
     return result
 
 
-def label_path_for_image(image):
+def label_path_for_image(image: str | Path) -> Path:
     image = Path(image)
     return image.parent.parent / "labels" / f"{image.stem}.txt"
 
 
-def read_ground_truth_classes(image):
+def read_ground_truth_classes(image: str | Path) -> set[int]:
     label = label_path_for_image(image)
     if not label.is_file():
         return set()
-    classes = set()
+    classes: set[int] = set()
     for line in label.read_text(encoding="utf-8").splitlines():
         fields = line.split()
         if fields:
@@ -176,7 +211,7 @@ def read_ground_truth_classes(image):
     return classes
 
 
-def write_test_yaml(path, split_dir, names):
+def write_test_yaml(path: Path, split_dir: Path, names: Mapping[int, str]) -> Path:
     lines = [
         f"path: {Path(split_dir).resolve().as_posix()}",
         "train: images/test",
@@ -189,8 +224,8 @@ def write_test_yaml(path, split_dir, names):
     return path
 
 
-def metric_summary(results):
-    values = {}
+def metric_summary(results: Any) -> JsonRecord:
+    values: JsonRecord = {}
     for kind, metrics in (("mask", results.seg), ("box", results.box)):
         precision, recall = float(metrics.mp), float(metrics.mr)
         values.update({
@@ -203,8 +238,14 @@ def metric_summary(results):
     return values
 
 
-def evaluate_total(model, yaml_path, args, output_dir, split):
-    results = model.val(
+def evaluate_total(
+    model: Any,
+    yaml_path: Path,
+    args: argparse.Namespace,
+    output_dir: Path,
+    split: str,
+) -> tuple[JsonRecord, list[JsonRecord]]:
+    results: Any = model.val(
         data=str(yaml_path),
         split=split,
         imgsz=args.imgsz,
@@ -224,16 +265,16 @@ def evaluate_total(model, yaml_path, args, output_dir, split):
         key: float(value) for key, value in results.speed.items()
     }
 
-    class_rows = []
-    _, names = read_dataset(yaml_path)
+    class_rows: list[JsonRecord] = []
+    read_dataset(yaml_path)
     image_counts = getattr(results, "nt_per_image", None)
     instance_counts = getattr(results, "nt_per_class", None)
-    result_indices = {
+    result_indices: dict[int, int] = {
         int(class_id): index
         for index, class_id in enumerate(getattr(results, "ap_class_index", []))
     }
     for class_id, class_name in sorted(EXPECTED_CLASSES.items()):
-        row = {"kelas": class_name}
+        row: JsonRecord = {"kelas": class_name}
         result_index = result_indices.get(class_id)
         for kind, metrics in (("mask", results.seg), ("box", results.box)):
             if result_index is None:
@@ -253,12 +294,17 @@ def evaluate_total(model, yaml_path, args, output_dir, split):
     return total, class_rows
 
 
-def variant_name(stem):
+def variant_name(stem: str) -> str:
     return stem.split("__", 1)[1] if "__" in stem else "asli"
 
 
-def evaluate_variants(model, images, names, args):
-    groups = defaultdict(list)
+def evaluate_variants(
+    model: Any,
+    images: list[Path],
+    names: Mapping[int, str],
+    args: argparse.Namespace,
+) -> list[JsonRecord]:
+    groups: dict[str, list[Path]] = defaultdict(list)
     for image in images:
         groups[variant_name(image.stem)].append(image)
 
@@ -268,7 +314,7 @@ def evaluate_variants(model, images, names, args):
     if originals and augmented:
         variants = {"ASLI": originals, "SEMUA_VARIAN": augmented, **variants}
 
-    rows = []
+    rows: list[JsonRecord] = []
     for variant, group in variants.items():
         if len(group) < 3:
             rows.append({
@@ -294,7 +340,7 @@ def evaluate_variants(model, images, names, args):
                     destination_label.write_text("", encoding="utf-8")
 
             yaml_path = write_test_yaml(temp_dir / "data.yaml", temp_dir, names)
-            results = model.val(
+            results: Any = model.val(
                 data=str(yaml_path),
                 split="test",
                 imgsz=args.imgsz,
@@ -318,23 +364,31 @@ def evaluate_variants(model, images, names, args):
     return rows
 
 
-def write_csv(path, rows, columns):
+def write_csv(path: Path, rows: list[JsonRecord], columns: list[str]) -> None:
     with path.open("w", newline="", encoding="utf-8-sig") as file:
         writer = csv.DictWriter(file, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
 
 
-def analyze_image_errors(model, images, args, output_dir):
-    errors, correct = [], []
-    true_positive, false_positive, false_negative = defaultdict(int), defaultdict(int), defaultdict(int)
+def analyze_image_errors(
+    model: Any,
+    images: list[Path],
+    args: argparse.Namespace,
+    output_dir: Path,
+) -> JsonRecord:
+    errors: list[tuple[JsonRecord, Path, Any]] = []
+    correct: list[tuple[JsonRecord, Path, Any]] = []
+    true_positive: defaultdict[int, int] = defaultdict(int)
+    false_positive: defaultdict[int, int] = defaultdict(int)
+    false_negative: defaultdict[int, int] = defaultdict(int)
     for image in images:
         actual = read_ground_truth_classes(image)
         result = model.predict(
             str(image), imgsz=args.imgsz, conf=args.conf, device=args.device,
             classes=sorted(EXPECTED_CLASSES), verbose=False
         )[0]
-        predicted = (
+        predicted: set[int] = (
             set(int(class_id) for class_id in result.boxes.cls.tolist())
             if result.boxes is not None and len(result.boxes)
             else set()
@@ -347,7 +401,7 @@ def analyze_image_errors(model, images, args, output_dir):
         for class_id in missed:
             false_negative[class_id] += 1
 
-        row = {
+        row: JsonRecord = {
             "file_gambar": image.name,
             "varian": variant_name(image.stem),
             "kelas_asli": ";".join(str(model.names[class_id]) for class_id in sorted(actual)),
@@ -371,12 +425,12 @@ def analyze_image_errors(model, images, args, output_dir):
             if not cv2.imwrite(str(destination / image.name), result.plot()):
                 raise OSError(f"Gagal menyimpan contoh prediksi untuk {image}")
 
-    per_variant_errors = defaultdict(int)
+    per_variant_errors: defaultdict[str, int] = defaultdict(int)
     for row, _, _ in errors:
         per_variant_errors[row["varian"]] += 1
 
     class_ids = sorted(EXPECTED_CLASSES)
-    per_class = []
+    per_class: list[JsonRecord] = []
     for class_id in class_ids:
         tp, fp, fn = (
             true_positive[class_id],
@@ -423,7 +477,11 @@ def analyze_image_errors(model, images, args, output_dir):
     }
 
 
-def measure_speed(model, images, args):
+def measure_speed(
+    model: Any,
+    images: list[Path],
+    args: argparse.Namespace,
+) -> JsonRecord:
     sample_count = min(args.n_kecepatan, len(images))
     if sample_count < 1:
         raise ValueError("Jumlah gambar untuk pengukuran kecepatan harus lebih dari nol.")
@@ -431,7 +489,7 @@ def measure_speed(model, images, args):
     for image in sample[:5]:
         model.predict(str(image), imgsz=args.imgsz, conf=args.conf, device=args.device, verbose=False)
 
-    elapsed_ms = []
+    elapsed_ms: list[float] = []
     for image in sample:
         started = time.perf_counter()
         model.predict(str(image), imgsz=args.imgsz, conf=args.conf, device=args.device, verbose=False)
@@ -447,7 +505,14 @@ def measure_speed(model, images, args):
     }
 
 
-def save_plots(output_dir, total, class_rows, variant_rows, image_class_rows, title):
+def save_plots(
+    output_dir: Path,
+    total: Mapping[str, Any],
+    class_rows: list[JsonRecord],
+    variant_rows: list[JsonRecord],
+    image_class_rows: list[JsonRecord],
+    title: str,
+) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -455,9 +520,20 @@ def save_plots(output_dir, total, class_rows, variant_rows, image_class_rows, ti
 
     plot_dir = output_dir / "grafik"
     plot_dir.mkdir(parents=True, exist_ok=True)
-    metric_names = [("p", "Presisi"), ("r", "Recall"), ("f1", "F1"), ("map50", "mAP50"), ("map5095", "mAP50-95")]
+    metric_names: list[tuple[str, str]] = [
+        ("p", "Presisi"),
+        ("r", "Recall"),
+        ("f1", "F1"),
+        ("map50", "mAP50"),
+        ("map5095", "mAP50-95"),
+    ]
 
-    def plot_series(axis, labels, series, heading):
+    def plot_series(
+        axis: Any,
+        labels: list[str],
+        series: Mapping[str, list[float]],
+        heading: str,
+    ) -> None:
         count = max(1, len(series))
         width = 0.8 / count
         for index, (name, values) in enumerate(series.items()):
@@ -477,7 +553,7 @@ def save_plots(output_dir, total, class_rows, variant_rows, image_class_rows, ti
         "Kotak": [total.get(f"box_{key}", 0.0) for key, _ in metric_names],
     }, f"Akurasi total {title}")
     fig.tight_layout()
-    fig.savefig(plot_dir / "1_ringkasan_total.png", dpi=150)
+    cast(Any, fig).savefig(plot_dir / "1_ringkasan_total.png", dpi=150)
     plt.close(fig)
 
     if class_rows:
@@ -489,7 +565,7 @@ def save_plots(output_dir, total, class_rows, variant_rows, image_class_rows, ti
                 for key, name in metric_names
             }, f"Akurasi per kelas - {label}")
         fig.tight_layout()
-        fig.savefig(plot_dir / "2_per_kelas.png", dpi=150)
+        cast(Any, fig).savefig(plot_dir / "2_per_kelas.png", dpi=150)
         plt.close(fig)
 
     variant_metric_rows = [row for row in variant_rows if "mask_map5095" in row]
@@ -501,7 +577,7 @@ def save_plots(output_dir, total, class_rows, variant_rows, image_class_rows, ti
             for key, name in metric_names
         }, f"Akurasi mask per varian gambar {title}")
         fig.tight_layout()
-        fig.savefig(plot_dir / "3_per_varian.png", dpi=150)
+        cast(Any, fig).savefig(plot_dir / "3_per_varian.png", dpi=150)
         plt.close(fig)
 
     if image_class_rows:
@@ -513,12 +589,12 @@ def save_plots(output_dir, total, class_rows, variant_rows, image_class_rows, ti
             "F1": [row["f1_gambar"] for row in image_class_rows],
         }, "Akurasi tingkat-gambar per kelas")
         fig.tight_layout()
-        fig.savefig(plot_dir / "4_tingkat_gambar.png", dpi=150)
+        cast(Any, fig).savefig(plot_dir / "4_tingkat_gambar.png", dpi=150)
         plt.close(fig)
     print(f"Grafik disimpan di: {plot_dir}")
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Evaluasi model YOLO pada gabungan lima kelas dataset Vestcare."
     )
@@ -537,7 +613,7 @@ def main():
     parser.add_argument(
         "--hasil07",
         type=Path,
-        default=ROOT / "hasil_07",
+        default=ROOT / "data" / "results" / "hasil_07",
         help="folder pipeline lama yang berisi pilihan_final.json",
     )
     parser.add_argument(
@@ -553,7 +629,7 @@ def main():
     parser.add_argument(
         "--out",
         type=Path,
-        default=ROOT / "hasil_08",
+        default=ROOT / "data" / "results" / "hasil_08",
     )
     parser.add_argument("--imgsz", type=int, default=512)
     parser.add_argument("--batch", type=int, default=1)
@@ -561,18 +637,27 @@ def main():
     parser.add_argument("--contoh", type=int, default=20, help="maksimum contoh per folder salah/benar")
     parser.add_argument("--n-kecepatan", type=int, default=100)
     parser.add_argument("--device", default=None)
-    args = parser.parse_args()
+    args: EvalArgs = parser.parse_args(namespace=EvalArgs())
 
     if args.imgsz < 1 or args.batch < 1 or args.contoh < 0 or args.n_kecepatan < 1:
         raise SystemExit("--imgsz, --batch, dan --n-kecepatan harus positif; --contoh tidak boleh negatif.")
 
     if args.splits_dir is not None:
-        split_name = args.split
+        split_name: Optional[str] = args.split
         if not split_name:
             selection_file = args.hasil07 / "pilihan_final.json"
             if not selection_file.is_file():
                 raise SystemExit(f"{selection_file} tidak ada. Beri --split split_rXX_sYY.")
-            split_name = json.loads(selection_file.read_text(encoding="utf-8"))["split"]
+            selection_data: Any = json.loads(selection_file.read_text(encoding="utf-8"))
+            if not isinstance(selection_data, dict):
+                raise ValueError(f"Pilihan split tidak valid di {selection_file}")
+            selection_record = cast(JsonRecord, selection_data)
+            selected_split = selection_record.get("split")
+            if not isinstance(selected_split, str):
+                raise ValueError(f"Pilihan split tidak valid di {selection_file}")
+            split_name = selected_split
+        if not split_name:
+            raise ValueError(f"Nama split tidak valid di {args.splits_dir}")
         split_dir = args.splits_dir / split_name
         dataset_yaml = split_dir / "data.yaml"
         eval_split = "test"
@@ -589,9 +674,13 @@ def main():
     model_candidates = [
         ROOT / "models" / "best.pt",
         ROOT / "models" / "best_semua_kelas.pt",
-        ROOT / "runs" / "segment" / "runs" / "semua_kelas_yolo26n" / "weights" / "best.pt",
+        ROOT / "data" / "results" / "runs" / "segment" / "runs"
+        / "semua_kelas_yolo26n" / "weights" / "best.pt",
     ]
-    model_path = args.model or next((path for path in model_candidates if path.is_file()), None)
+    model_path: Optional[Path] = args.model or next(
+        (path for path in model_candidates if path.is_file()),
+        None,
+    )
     if model_path is None or not model_path.is_file():
         raise SystemExit(
             "Model tidak ditemukan. Jalankan start_train.py terlebih dahulu atau beri --model."
@@ -604,9 +693,8 @@ def main():
     images = list_split_images(dataset_yaml, eval_split)
     log_path = args.out / f"evaluation_{datetime.now():%Y%m%d_%H%M%S}.log"
     with capture_console(log_path):
-        model = YOLO(str(model_path))
-        model_names = model.names if isinstance(model.names, dict) else dict(enumerate(model.names))
-        model_names = {int(class_id): str(name) for class_id, name in model_names.items()}
+        model: Any = YOLO(str(model_path))
+        model_names = _baca_kelas(model.names, model_path)
         if model_names != names:
             raise ValueError(f"Kelas model {model_names} tidak sama dengan dataset {names}.")
 
@@ -638,7 +726,7 @@ def main():
         (args.out / "kecepatan.json").write_text(
             json.dumps(speed, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-        report = {
+        report: JsonRecord = {
             "model": str(model_path),
             "dataset": str(dataset_yaml),
             "split": title_split,
@@ -671,7 +759,7 @@ def main():
             "METRIK DETEKSI PER KELAS (P | R | F1 | mAP50 | mAP50-95)",
         ])
         for row in class_rows:
-            values = []
+            values: list[str] = []
             for kind in ("mask", "box"):
                 values.append(
                     " | ".join(

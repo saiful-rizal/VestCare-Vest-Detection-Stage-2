@@ -6,11 +6,13 @@ import math
 import random
 import sys
 import subprocess
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 import shutil
 import zipfile
+from typing import Any, Optional, TextIO, TypedDict, cast
 
 import torch
 import yaml
@@ -22,11 +24,11 @@ MODEL = "yolo26n-seg.pt"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
 DATASETS = [
-    ("lubang", ROOT / "dataset_utama" / "dataset_lubang" / "3_pengayaan_gerak" / "data.yaml"),
-    ("mobil", ROOT / "dataset_utama" / "dataset_mobil" / "3_pengayaan_gerak" / "data.yaml"),
-    ("motor", ROOT / "dataset_utama" / "dataset_motor" / "3_pengayaan_gerak" / "data.yaml"),
-    ("orang", ROOT / "dataset_utama" / "dataset_orang" / "3_pengayaan_gerak" / "data.yaml"),
-    ("pohon", ROOT / "dataset_utama" / "dataset_pohon" / "3_pengayaan_gerak" / "data.yaml"),
+    ("lubang", ROOT / "data" / "datasets" / "utama" / "source_by_class" / "dataset_lubang" / "3_pengayaan_gerak" / "data.yaml"),
+    ("mobil", ROOT / "data" / "datasets" / "utama" / "source_by_class" / "dataset_mobil" / "3_pengayaan_gerak" / "data.yaml"),
+    ("motor", ROOT / "data" / "datasets" / "utama" / "source_by_class" / "dataset_motor" / "3_pengayaan_gerak" / "data.yaml"),
+    ("orang", ROOT / "data" / "datasets" / "utama" / "source_by_class" / "dataset_orang" / "3_pengayaan_gerak" / "data.yaml"),
+    ("pohon", ROOT / "data" / "datasets" / "utama" / "source_by_class" / "dataset_pohon" / "3_pengayaan_gerak" / "data.yaml"),
 ]
 EXPECTED_CLASSES = {
     0: "pohon",
@@ -38,7 +40,7 @@ EXPECTED_CLASSES = {
 SUPPORT_CLASS_ID = len(EXPECTED_CLASSES)
 SUPPORT_CLASS_NAME = "__non_target_internal__"
 TRAINING_CLASSES = {**EXPECTED_CLASSES, SUPPORT_CLASS_ID: SUPPORT_CLASS_NAME}
-SUPPORTING_DATASET_DIR = ROOT / "dataset penunjang"
+SUPPORTING_DATASET_DIR = ROOT / "data" / "datasets" / "penunjang"
 VAL_FRACTION = 0.10
 
 EPOCHS = 100
@@ -46,7 +48,7 @@ IMGSZ = 512
 BATCH = 4
 WORKERS = 0
 DEVICE = "0"
-PROJECT = "runs"
+PROJECT = str(ROOT / "data" / "results" / "runs")
 EXIST_OK = False
 
 PATIENCE = 50
@@ -84,43 +86,63 @@ MIXUP = 0.0
 MODELS_DIR = ROOT / "models"
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
+JsonRecord = dict[str, Any]
+
+
+class ImageGroup(TypedDict):
+    images: list[Path]
+    classes: set[int]
+
+
+def _baca_kelas(raw_names: Any, source: str | Path) -> dict[int, str]:
+    if isinstance(raw_names, list):
+        if not all(isinstance(name, str) for name in cast(list[Any], raw_names)):
+            raise ValueError(f"Daftar kelas tidak valid di {source}")
+        return dict(enumerate(cast(list[str], raw_names)))
+    if isinstance(raw_names, dict):
+        return {
+            int(class_id): str(name)
+            for class_id, name in cast(dict[Any, Any], raw_names).items()
+        }
+    raise ValueError(f"Daftar kelas tidak valid di {source}")
+
 
 class Tee:
     """Tulis output ke terminal dan file log sekaligus."""
 
-    def __init__(self, *streams):
-        self.streams = streams
+    def __init__(self, *streams: TextIO) -> None:
+        self.streams: tuple[TextIO, ...] = streams
 
-    def write(self, text):
+    def write(self, text: str) -> int:
         for stream in self.streams:
             stream.write(text)
         return len(text)
 
-    def flush(self):
+    def flush(self) -> None:
         for stream in self.streams:
             stream.flush()
 
-    def isatty(self):
-        return any(getattr(stream, "isatty", lambda: False)() for stream in self.streams)
+    def isatty(self) -> bool:
+        return any(stream.isatty() for stream in self.streams)
 
-    def fileno(self):
+    def fileno(self) -> int:
         return self.streams[0].fileno()
 
     @property
-    def encoding(self):
-        return getattr(self.streams[0], "encoding", "utf-8")
+    def encoding(self) -> str:
+        return self.streams[0].encoding or "utf-8"
 
 
 @contextmanager
-def capture_console(log_path):
+def capture_console(log_path: str | Path) -> Generator[None, None, None]:
     """Simpan stdout, stderr, dan log Ultralytics ke satu file tanpa mematikan terminal."""
     original_stdout = sys.stdout
     original_stderr = sys.stderr
-    handlers = [
-        (handler, handler.stream)
-        for handler in LOGGER.handlers
-        if isinstance(handler, logging.StreamHandler)
-    ]
+    handlers: list[tuple[logging.StreamHandler[TextIO], TextIO]] = []
+    for raw_handler in LOGGER.handlers:
+        if isinstance(raw_handler, logging.StreamHandler):
+            handler = cast(logging.StreamHandler[TextIO], raw_handler)
+            handlers.append((handler, handler.stream))
 
     with Path(log_path).open("w", encoding="utf-8", buffering=1) as log_file:
         stdout = Tee(original_stdout, log_file)
@@ -128,7 +150,7 @@ def capture_console(log_path):
         sys.stdout = stdout
         sys.stderr = stderr
         for handler, _ in handlers:
-            handler.setStream(stdout)
+            handler.setStream(cast(TextIO, stdout))
         try:
             yield
         finally:
@@ -140,7 +162,7 @@ def capture_console(log_path):
                 handler.setStream(stream)
 
 
-def _siapkan_gambar_penunjang(output_dir):
+def _siapkan_gambar_penunjang(output_dir: Path) -> list[Path]:
     """Stage objek di luar kelas utama sebagai satu kelas internal untuk training."""
     archives = sorted(SUPPORTING_DATASET_DIR.glob("*.zip"))
     if not archives:
@@ -152,8 +174,8 @@ def _siapkan_gambar_penunjang(output_dir):
     label_dir = output_dir / "labels" / "train"
     image_dir.mkdir(parents=True, exist_ok=True)
     label_dir.mkdir(parents=True, exist_ok=True)
-    staged_images = []
-    seen_targets = set()
+    staged_images: list[Path] = []
+    seen_targets: set[Path] = set()
 
     for archive_path in archives:
         with zipfile.ZipFile(archive_path) as archive:
@@ -163,17 +185,13 @@ def _siapkan_gambar_penunjang(output_dir):
             )
             if data_member is None:
                 raise ValueError(f"data.yaml tidak ditemukan di {archive_path}")
-            data = yaml.safe_load(archive.read(data_member)) or {}
-            names = data.get("names")
-            if isinstance(names, list):
-                names = dict(enumerate(names))
-            elif isinstance(names, dict):
-                names = {int(class_id): str(name) for class_id, name in names.items()}
-            else:
+            data: Any = yaml.safe_load(archive.read(data_member)) or {}
+            if not isinstance(data, dict):
                 raise ValueError(f"Daftar kelas tidak valid di {archive_path}")
+            names = _baca_kelas(cast(JsonRecord, data).get("names"), archive_path)
 
             target_name = archive_path.stem.removeprefix("dataset_")
-            target_ids = [
+            target_ids: list[int] = [
                 class_id for class_id, name in names.items() if name == target_name
             ]
             if len(target_ids) != 1:
@@ -198,7 +216,7 @@ def _siapkan_gambar_penunjang(output_dir):
                         f"Label untuk gambar {member} tidak ditemukan di {archive_path}"
                     )
 
-                remapped_lines = []
+                remapped_lines: list[str] = []
                 for line in archive.read(label_member).decode("utf-8-sig").splitlines():
                     fields = line.split()
                     if not fields:
@@ -231,24 +249,21 @@ def _siapkan_gambar_penunjang(output_dir):
     return staged_images
 
 
-def buat_data_gabungan(run_name=None):
+def buat_data_gabungan(run_name: Optional[str] = None) -> Path:
     """Split kelas utama dan tambahkan objek penunjang hanya ke data train."""
-    groups_by_dataset = {}
+    groups_by_dataset: dict[str, dict[str, ImageGroup]] = {}
 
     for nama, data_yaml in DATASETS:
         if not data_yaml.is_file():
             raise FileNotFoundError(f"data.yaml untuk {nama} tidak ditemukan: {data_yaml}")
 
         with data_yaml.open(encoding="utf-8") as file:
-            data = yaml.safe_load(file) or {}
+            raw_data: Any = yaml.safe_load(file) or {}
+        if not isinstance(raw_data, dict):
+            raise ValueError(f"Konfigurasi dataset tidak valid di {data_yaml}")
+        data = cast(JsonRecord, raw_data)
 
-        names = data.get("names")
-        if isinstance(names, list):
-            names = dict(enumerate(names))
-        elif isinstance(names, dict):
-            names = {int(class_id): str(class_name) for class_id, class_name in names.items()}
-        else:
-            raise ValueError(f"Konfigurasi kelas tidak valid di {data_yaml}")
+        names = _baca_kelas(data.get("names"), data_yaml)
         if names != EXPECTED_CLASSES:
             raise ValueError(
                 f"Kelas di {data_yaml} adalah {names}; seharusnya {EXPECTED_CLASSES}"
@@ -264,7 +279,7 @@ def buat_data_gabungan(run_name=None):
         if not image_dir.is_dir():
             raise FileNotFoundError(f"Folder gambar untuk {nama} tidak ditemukan: {image_dir}")
 
-        groups = {}
+        groups: dict[str, ImageGroup] = {}
         for image in sorted(image_dir.iterdir()):
             if not image.is_file() or image.suffix.lower() not in IMAGE_EXTENSIONS:
                 continue
@@ -284,10 +299,10 @@ def buat_data_gabungan(run_name=None):
             raise ValueError(f"Dataset {nama} harus memiliki sedikitnya dua kelompok gambar.")
         groups_by_dataset[nama] = groups
 
-    train_images = []
-    val_images = []
-    val_groups = set()
-    image_classes = {}
+    train_images: list[Path] = []
+    val_images: list[Path] = []
+    val_groups: set[tuple[str, str]] = set()
+    image_classes: dict[Path, set[int]] = {}
     for dataset_name, groups in groups_by_dataset.items():
         keys = sorted(groups)
         random.Random(0).shuffle(keys)
@@ -298,8 +313,8 @@ def buat_data_gabungan(run_name=None):
             image_classes.update({image: group["classes"] for image in group["images"]})
             (val_images if key in selected else train_images).extend(group["images"])
 
-    def classes_in(images):
-        found = set()
+    def classes_in(images: list[Path]) -> set[int]:
+        found: set[int] = set()
         for image in images:
             found.update(image_classes[image])
         return found
@@ -307,7 +322,7 @@ def buat_data_gabungan(run_name=None):
     val_classes = classes_in(val_images)
     train_classes = classes_in(train_images)
     for class_id in sorted(set(EXPECTED_CLASSES) - val_classes):
-        candidates = [
+        candidates: list[tuple[str, str, ImageGroup]] = [
             (dataset_name, key, group)
             for dataset_name, groups in groups_by_dataset.items()
             for key, group in groups.items()
@@ -337,7 +352,7 @@ def buat_data_gabungan(run_name=None):
         raise ValueError(f"Kelas hilang dari data val: {set(EXPECTED_CLASSES) - val_classes}")
 
     run_name = run_name or f"training_{datetime.now():%Y%m%d_%H%M%S_%f}"
-    split_dir = ROOT / "runs" / "dataset_splits" / run_name
+    split_dir = ROOT / "data" / "results" / "runs" / "dataset_splits" / run_name
     split_dir.mkdir(parents=True, exist_ok=True)
     supporting_images = _siapkan_gambar_penunjang(split_dir / "supporting")
     train_images.extend(supporting_images)
@@ -354,7 +369,7 @@ def buat_data_gabungan(run_name=None):
     )
 
     config_path = ROOT / "dataset_gabungan.yaml"
-    config = {
+    config: JsonRecord = {
         "path": ROOT.as_posix(),
         "train": train_manifest.as_posix(),
         "val": val_manifest.as_posix(),
@@ -365,7 +380,7 @@ def buat_data_gabungan(run_name=None):
     return config_path
 
 
-def _baca_gambar_split(source, root):
+def _baca_gambar_split(source: str | Path, root: Path) -> list[Path]:
     """Ambil file gambar dari direktori atau manifest gambar YOLO."""
     path = Path(source)
     if not path.is_absolute():
@@ -385,19 +400,28 @@ def _baca_gambar_split(source, root):
     raise FileNotFoundError(f"Path dataset tidak ditemukan: {path}")
 
 
-def informasi_dataset(data_yaml):
+def informasi_dataset(data_yaml: Path) -> JsonRecord:
     """Hitung jumlah gambar dan overlap sebenarnya antara train dan val."""
     with Path(data_yaml).open(encoding="utf-8") as file:
-        data = yaml.safe_load(file)
+        raw_data: Any = yaml.safe_load(file)
+    if not isinstance(raw_data, dict):
+        raise ValueError(f"Konfigurasi dataset tidak valid di {data_yaml}")
+    data = cast(JsonRecord, raw_data)
 
-    info = {}
-    image_sets = {}
+    info: JsonRecord = {}
+    image_sets: dict[str, set[Path]] = {}
     for split in ("train", "val"):
-        sources = data.get(split, "images")
-        sources = sources if isinstance(sources, list) else [sources]
+        raw_sources: Any = data.get(split, "images")
+        sources: list[Any] = (
+            cast(list[Any], raw_sources) if isinstance(raw_sources, list) else [raw_sources]
+        )
+        if not all(isinstance(source, (str, Path)) for source in sources):
+            raise ValueError(f"Path split '{split}' tidak valid di {data_yaml}")
+        sources = cast(list[str | Path], sources)
         root = Path(data.get("path", Path(data_yaml).parent))
-        images = {
-            image for source in sources
+        images: set[Path] = {
+            image
+            for source in sources
             for image in _baca_gambar_split(source, root)
         }
         image_sets[split] = images
@@ -410,7 +434,7 @@ def informasi_dataset(data_yaml):
     return info
 
 
-def angka_json(value):
+def angka_json(value: Any) -> Optional[float]:
     """Konversi metrik numerik ke tipe JSON dan ubah NaN/inf menjadi null."""
     try:
         number = float(value)
@@ -419,19 +443,22 @@ def angka_json(value):
     return number if math.isfinite(number) else None
 
 
-def ringkasan_metrik(results):
+def ringkasan_metrik(results: Any) -> JsonRecord:
     """Ambil metrik agregat serta metrik box dan mask untuk setiap kelas."""
     names = results.names
-    class_names = names if isinstance(names, dict) else dict(enumerate(names))
-    summary_by_name = {row["Class"]: row for row in results.summary(decimals=6)}
-    mask_by_name = {}
-    mask_map75_by_name = {}
+    class_names = _baca_kelas(names, "hasil evaluasi")
+    summary_by_name: dict[str, JsonRecord] = {
+        str(row["Class"]): cast(JsonRecord, row)
+        for row in results.summary(decimals=6)
+    }
+    mask_by_name: dict[str, tuple[Any, ...]] = {}
+    mask_map75_by_name: dict[str, Any] = {}
     for position, class_id in enumerate(results.seg.ap_class_index):
         values = results.seg.class_result(position)
         mask_by_name[class_names[class_id]] = values
         mask_map75_by_name[class_names[class_id]] = results.seg.all_ap[position][5]
 
-    per_class = []
+    per_class: list[JsonRecord] = []
     for class_id, class_name in sorted(EXPECTED_CLASSES.items()):
         row = summary_by_name.get(class_name, {})
         mask = mask_by_name.get(class_name)
@@ -454,7 +481,7 @@ def ringkasan_metrik(results):
             "mask_map50_95": angka_json(mask[3]) if mask else None,
         })
 
-    overall = {
+    overall: JsonRecord = {
         key: angka_json(value)
         for key, value in results.results_dict.items()
     }
@@ -467,13 +494,485 @@ def ringkasan_metrik(results):
     }
 
 
-def simpan_laporan(run_dir, report):
+def _simpan_flowchart_backbone(reports_dir: Path) -> tuple[Path, Path, Path]:
+    flowchart_path = reports_dir / "alur_backbone.md"
+    flowchart_path.write_text(
+        """# Alur backbone dan training VestCare
+
+- Model: `yolo26n-seg.pt`
+- Ukuran input training: `512 x 512 x 3`
+
+![Flowchart backbone VestCare](alur_backbone.png)
+
+```mermaid
+flowchart LR
+    I["Input 512x512x3"] --> C1["Conv P1/2"]
+    C1 --> C2["Conv P2/4"]
+    C2 --> B2["C3k2 P2/4"]
+    B2 --> C3["Conv P3/8"]
+    C3 --> B3["C3k2 P3/8"]
+    B3 --> C4["Conv P4/16"]
+    C4 --> B4["C3k2 P4/16"]
+    B4 --> C5["Conv P5/32"]
+    C5 --> B5["C3k2 P5/32"]
+    B5 --> S["SPPF"]
+    S --> A["C2PSA"]
+    B3 -. "fitur P3" .-> N["Neck"]
+    B4 -. "fitur P4" .-> N
+    A -. "fitur P5" .-> N
+    N --> H["Head segmentasi"]
+    H --> O["Kelas, kotak, dan mask"]
+    O --> L["Loss terhadap label"]
+    L --> U["Backpropagation + AdamW"]
+    U --> E{"Epoch selesai?"}
+    E -- "Belum" --> I
+    E -- "Ya" --> W["Pilih best.pt"]
+    W --> V["Evaluasi akhir"]
+    V --> Q{"Quality gate tercapai?"}
+    Q -- "Ya" --> D["Pasang bobot baru"]
+    Q -- "Tidak" --> R["Pertahankan bobot layanan lama"]
+```
+
+## Pengertian dan fungsi blok backbone
+
+| Blok | Pengertian | Fungsi pada alur |
+|---|---|---|
+| Conv P1/2 | Konvolusi 3x3 dengan stride 2. | Mengambil fitur dasar seperti tepi dan tekstur; resolusi menjadi setengah. |
+| Conv P2/4 | Konvolusi 3x3 dengan stride 2. | Memperkaya fitur awal dan menurunkan resolusi menjadi seperempat input. |
+| C3k2 P2/4 | Blok ekstraksi fitur berbasis bottleneck C3k2. | Mengolah pola awal dan meneruskan fitur ke tahap berikutnya. |
+| Conv P3/8 | Konvolusi 3x3 dengan stride 2. | Menurunkan resolusi ke skala P3/8. |
+| C3k2 P3/8 | Blok ekstraksi fitur C3k2 pada skala P3. | Memperkuat fitur objek kecil; keluarannya menjadi salah satu masukan neck. |
+| Conv P4/16 | Konvolusi 3x3 dengan stride 2. | Menurunkan resolusi ke skala P4/16. |
+| C3k2 P4/16 | Blok ekstraksi fitur C3k2 pada skala P4. | Memperkuat fitur objek sedang; keluarannya menjadi masukan neck. |
+| Conv P5/32 | Konvolusi 3x3 dengan stride 2. | Menurunkan resolusi ke skala P5/32 untuk konteks yang lebih luas. |
+| C3k2 P5/32 | Blok ekstraksi fitur C3k2 pada skala P5. | Memperkuat fitur semantik objek besar sebelum SPPF. |
+| SPPF | Spatial Pyramid Pooling - Fast, dengan pooling bertingkat. | Menggabungkan konteks dari area/reseptif yang lebih luas secara efisien. |
+| C2PSA | Blok C2 dengan perhatian spasial. | Memberi bobot lebih pada area fitur penting sebelum fitur P5 diteruskan ke neck. |
+
+Skala P3, P4, dan P5 masing-masing memiliki stride 8, 16, dan 32 terhadap input. Skala nano (`n`) menyesuaikan jumlah pengulangan blok dan kanal. Neck menerima fitur dari C3k2 P3, C3k2 P4, dan C2PSA P5.
+
+### Alur training sampai evaluasi
+
+![Alur training sampai evaluasi](alur_training_evaluasi.png)
+
+```mermaid
+flowchart LR
+    A["Mulai dan catat log"] --> B["Gabungkan dataset dan buat split train/val"]
+    B --> C["Periksa kelas dan pastikan train/val tidak overlap"]
+    C --> D["Training YOLO26n-seg di GPU"]
+    D --> E["Pilih weights/best.pt"]
+    E --> F["Validasi model.val pada split val"]
+    F --> G["Evaluasi detail melalui start_eval.py"]
+    G --> H["Quality gate: 4 metrik x 5 kelas >= 98%"]
+    H --> I{"Semua target lulus?"}
+    I -- "Ya" --> J["Pasang best.pt secara atomik; restart API"]
+    I -- "Tidak" --> K["Pertahankan model layanan lama; exit code 2"]
+    J --> L["Simpan laporan, grafik, CSV, dan log"]
+    K --> L
+```
+
+- Dataset utama dibagi per kelompok gambar; data penunjang hanya ditambahkan ke train.
+- Training memakai ukuran gambar 512, batch 4, maksimum 100 epoch, GPU 0, AdamW, dan patience 50.
+- Evaluasi detail memakai split `val`. Quality gate memeriksa `box_p`, `box_map50`, `mask_p`, dan `mask_map50` untuk setiap kelas target; semua nilai harus minimal 98%.
+- Jika quality gate gagal, model layanan yang lama tidak diganti.
+""",
+        encoding="utf-8",
+    )
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import FancyBboxPatch, Rectangle
+
+    image_path = reports_dir / "alur_backbone.png"
+    figure: Any
+    axis: Any
+    figure, axis = plt.subplots(figsize=(24, 14))
+    axis.set_xlim(0, 1)
+    axis.set_ylim(0, 1)
+    axis.set_axis_off()
+    axis.text(
+        0.5,
+        0.975,
+        "ALUR BACKBONE YOLO26N-SEG DAN FUNGSI SETIAP BLOK",
+        transform=axis.transAxes,
+        ha="center",
+        va="center",
+        fontsize=19,
+        fontweight="bold",
+        color="#17324d",
+    )
+
+    def add_box(
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+        label: str,
+        color: str,
+        fontsize: float = 9,
+    ) -> None:
+        shape = FancyBboxPatch(
+            (x, y),
+            width,
+            height,
+            boxstyle="round,pad=0.003",
+            transform=axis.transAxes,
+            facecolor=color,
+            edgecolor="#36566f",
+            linewidth=1.2,
+        )
+        axis.add_patch(shape)
+        axis.text(
+            x + width / 2,
+            y + height / 2,
+            label,
+            transform=axis.transAxes,
+            ha="center",
+            va="center",
+            fontsize=fontsize,
+            color="#17324d",
+        )
+
+    def add_arrow(start: tuple[float, float], end: tuple[float, float]) -> None:
+        axis.annotate(
+            "",
+            xy=end,
+            xytext=start,
+            xycoords="axes fraction",
+            textcoords="axes fraction",
+            arrowprops={"arrowstyle": "->", "color": "#36566f", "linewidth": 1.6},
+        )
+
+    backbone_nodes = [
+        ("INPUT", "RGB\n512x512x3", "#e7f1fb"),
+        ("CONV", "P1/2\nstride 2\nfitur dasar", "#e8f5e9"),
+        ("CONV", "P2/4\nstride 2\nfitur awal", "#e8f5e9"),
+        ("C3k2", "P2/4\nolah pola\nawal", "#d9efdf"),
+        ("CONV", "P3/8\ndownsample\nstride 2", "#e8f5e9"),
+        ("C3k2", "P3/8\nfitur objek\nkecil", "#d9efdf"),
+        ("CONV", "P4/16\ndownsample\nstride 2", "#e8f5e9"),
+        ("C3k2", "P4/16\nfitur objek\nsedang", "#d9efdf"),
+        ("CONV", "P5/32\ndownsample\nstride 2", "#e8f5e9"),
+        ("C3k2", "P5/32\nfitur objek\nbesar", "#d9efdf"),
+        ("SPPF", "pooling\nkonteks\nmulti-skala", "#fff1df"),
+        ("C2PSA", "perhatian\nfitur penting", "#fce8e6"),
+        ("KELUARAN", "fitur P3\nP4 dan P5\nke neck", "#e7f1fb"),
+    ]
+    node_width = 0.069
+    node_gap = 0.00525
+    node_y = 0.79
+    node_height = 0.14
+    start_x = 0.02
+    for index, (title, detail, color) in enumerate(backbone_nodes):
+        x = start_x + index * (node_width + node_gap)
+        add_box(
+            x,
+            node_y,
+            node_width,
+            node_height,
+            f"{title}\n{detail}",
+            color,
+            7.1,
+        )
+        if index < len(backbone_nodes) - 1:
+            add_arrow((x + node_width, node_y + node_height / 2), (x + node_width + node_gap, node_y + node_height / 2))
+
+    axis.text(
+        0.5,
+        0.75,
+        "Fitur yang diambil menuju neck: keluaran C3k2 P3/8, C3k2 P4/16, dan C2PSA P5/32.",
+        transform=axis.transAxes,
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="#36566f",
+    )
+    axis.text(
+        0.5,
+        0.695,
+        "PENGERTIAN DAN FUNGSI SETIAP BLOK BACKBONE",
+        transform=axis.transAxes,
+        ha="center",
+        va="center",
+        fontsize=12,
+        fontweight="bold",
+        color="#17324d",
+    )
+
+    explanations = [
+        ("Conv P1/2", "Konvolusi 3x3,\nstride 2.", "Ambil tepi/tekstur awal;\nresolusi menjadi 1/2."),
+        ("Conv P2/4", "Konvolusi 3x3,\nstride 2.", "Perkaya fitur awal;\nresolusi menjadi 1/4."),
+        ("C3k2 P2/4", "Blok ekstraksi fitur\nberbasis bottleneck.", "Olah pola awal dan\nteruskan fitur."),
+        ("Conv P3/8", "Konvolusi 3x3,\nstride 2.", "Turunkan resolusi\nke skala P3/8."),
+        ("C3k2 P3/8", "Blok ekstraksi fitur\npada skala P3.", "Perkuat fitur objek kecil;\nfitur P3 ke neck."),
+        ("Conv P4/16", "Konvolusi 3x3,\nstride 2.", "Turunkan resolusi\nke skala P4/16."),
+        ("C3k2 P4/16", "Blok ekstraksi fitur\npada skala P4.", "Perkuat fitur objek sedang;\nfitur P4 ke neck."),
+        ("Conv P5/32", "Konvolusi 3x3,\nstride 2.", "Turunkan resolusi ke P5;\nkonteks menjadi lebih luas."),
+        ("C3k2 P5/32", "Blok ekstraksi fitur\npada skala P5.", "Perkuat fitur semantik\nobjek besar."),
+        ("SPPF", "Spatial Pyramid Pooling\n- Fast.", "Gabungkan konteks lokal\nhingga area yang lebih luas."),
+        ("C2PSA", "Blok C2 dengan\nperhatian spasial.", "Timbang area penting;\nteruskan fitur P5 ke neck."),
+    ]
+
+    def add_table(x: float, y_top: float, rows: list[tuple[str, str, str]]) -> None:
+        column_widths = (0.105, 0.16, 0.205)
+        row_height = 0.044
+        header_height = 0.036
+        headers = ("Blok", "Pengertian", "Fungsi dalam sistem")
+        x_positions = (x, x + column_widths[0], x + column_widths[0] + column_widths[1])
+
+        def add_cell(
+            cell_x: float,
+            cell_y: float,
+            cell_width: float,
+            cell_height: float,
+            text: str,
+            header: bool,
+            shaded: bool,
+        ) -> None:
+            cell = Rectangle(
+                (cell_x, cell_y),
+                cell_width,
+                cell_height,
+                transform=axis.transAxes,
+                facecolor="#dce8f1" if header else ("#f4f8fb" if shaded else "#ffffff"),
+                edgecolor="#9bb0c0",
+                linewidth=0.65,
+            )
+            axis.add_patch(cell)
+            axis.text(
+                cell_x + 0.004,
+                cell_y + cell_height / 2,
+                text,
+                transform=axis.transAxes,
+                ha="left",
+                va="center",
+                fontsize=7.1 if not header else 7.5,
+                fontweight="bold" if header else "normal",
+                color="#17324d",
+            )
+
+        for column, header in enumerate(headers):
+            add_cell(x_positions[column], y_top - header_height, column_widths[column], header_height, header, True, False)
+        for row_index, row in enumerate(rows):
+            y = y_top - header_height - (row_index + 1) * row_height
+            for column, value in enumerate(row):
+                add_cell(x_positions[column], y, column_widths[column], row_height, value, False, row_index % 2 == 1)
+
+    add_table(0.02, 0.655, explanations[:6])
+    add_table(0.51, 0.655, explanations[6:])
+
+    axis.text(
+        0.5,
+        0.325,
+        "LANJUTAN ALUR: NECK, HEAD SEGMENTASI, DAN TRAINING",
+        transform=axis.transAxes,
+        ha="center",
+        va="center",
+        fontsize=12,
+        fontweight="bold",
+        color="#17324d",
+    )
+    training_nodes = [
+        ("NECK", "gabungkan fitur\nP3/P4/P5", "#f0eafa"),
+        ("HEAD SEGMENTASI", "proses fitur\nmulti-skala", "#fff1df"),
+        ("PREDIKSI", "kelas, kotak,\ndan mask", "#e7f1fb"),
+        ("LOSS", "bandingkan hasil\ndengan label", "#fff8d9"),
+        ("UPDATE BOBOT", "backpropagation\n+ AdamW", "#fce8e6"),
+        ("ULANGI EPOCH", "sampai training\nselesai", "#f4f8fb"),
+        ("BEST.PT + EVALUASI", "quality gate:\npasang / tahan", "#e8f5e9"),
+    ]
+    train_width = 0.128
+    train_gap = 0.01066
+    train_y = 0.17
+    train_height = 0.105
+    train_start_x = 0.02
+    for index, (title, detail, color) in enumerate(training_nodes):
+        x = train_start_x + index * (train_width + train_gap)
+        add_box(x, train_y, train_width, train_height, f"{title}\n{detail}", color, 8)
+        if index < len(training_nodes) - 1:
+            add_arrow(
+                (x + train_width, train_y + train_height / 2),
+                (x + train_width + train_gap, train_y + train_height / 2),
+            )
+
+    axis.text(
+        0.5,
+        0.09,
+        "Catatan: P3/P4/P5 memiliki stride 8/16/32 terhadap input. Skala nano (n) menyesuaikan jumlah blok dan kanal.",
+        transform=axis.transAxes,
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="#36566f",
+    )
+
+    figure.savefig(image_path, dpi=180, bbox_inches="tight")
+    plt.close(figure)
+
+    training_image_path = reports_dir / "alur_training_evaluasi.png"
+    training_figure: Any
+    training_axis: Any
+    training_figure, training_axis = plt.subplots(figsize=(24, 12))
+    training_axis.set_xlim(0, 1)
+    training_axis.set_ylim(0, 1)
+    training_axis.set_axis_off()
+    training_axis.text(
+        0.5,
+        0.95,
+        "ALUR TRAINING SAMPAI EVALUASI YOLO26N-SEG",
+        transform=training_axis.transAxes,
+        ha="center",
+        va="center",
+        fontsize=19,
+        fontweight="bold",
+        color="#17324d",
+    )
+
+    def add_training_box(
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+        label: str,
+        color: str,
+        fontsize: float = 8,
+    ) -> None:
+        shape = FancyBboxPatch(
+            (x, y),
+            width,
+            height,
+            boxstyle="round,pad=0.004",
+            transform=training_axis.transAxes,
+            facecolor=color,
+            edgecolor="#36566f",
+            linewidth=1.3,
+        )
+        training_axis.add_patch(shape)
+        training_axis.text(
+            x + width / 2,
+            y + height / 2,
+            label,
+            transform=training_axis.transAxes,
+            ha="center",
+            va="center",
+            fontsize=fontsize,
+            color="#17324d",
+        )
+
+    def add_training_arrow(
+        start: tuple[float, float], end: tuple[float, float]
+    ) -> None:
+        training_axis.annotate(
+            "",
+            xy=end,
+            xytext=start,
+            xycoords="axes fraction",
+            textcoords="axes fraction",
+            arrowprops={"arrowstyle": "->", "color": "#36566f", "linewidth": 1.6},
+        )
+
+    training_steps = [
+        ("MULAI + LOG\nBuat nama run;\nrekam console ke log", "#e7f1fb"),
+        (
+            "SIAPKAN DATA\nGabungkan 5 dataset;\nsplit per grup;\ndata penunjang hanya train",
+            "#e8f5e9",
+        ),
+        (
+            "CEK DATA\nSemua 5 kelas ada di\ntrain dan val;\ntidak ada gambar overlap",
+            "#e8f5e9",
+        ),
+        (
+            "TRAIN YOLO26N-SEG\nGPU 0; gambar 512; batch 4;\nmaks. 100 epoch;\nAdamW; patience 50",
+            "#f0eafa",
+        ),
+        (
+            "PILIH BEST.PT\nGunakan checkpoint terbaik;\nbaca riwayat epoch\ndari results.csv",
+            "#e7f1fb",
+        ),
+        (
+            "VALIDASI model.val\nbest.pt pada split val;\nsimpan metrik, plot,\ndan prediksi evaluasi",
+            "#fff1df",
+        ),
+        (
+            "EVALUASI DETAIL\nJalankan start_eval.py\npada split val; hasilkan\nCSV, JSON, grafik, dan log",
+            "#fff1df",
+        ),
+        (
+            "QUALITY GATE\nbox_p, box_map50,\nmask_p, mask_map50;\nsemua 5 kelas >= 98%",
+            "#fff8d9",
+        ),
+    ]
+    step_width = 0.1125
+    step_gap = 0.012
+    step_start_x = 0.008
+    step_y = 0.56
+    step_height = 0.22
+    for index, (label, color) in enumerate(training_steps):
+        x = step_start_x + index * (step_width + step_gap)
+        add_training_box(x, step_y, step_width, step_height, label, color)
+        if index < len(training_steps) - 1:
+            add_training_arrow(
+                (x + step_width, step_y + step_height / 2),
+                (x + step_width + step_gap, step_y + step_height / 2),
+            )
+
+    gate_center = step_start_x + 7 * (step_width + step_gap) + step_width / 2
+    add_training_box(
+        0.08,
+        0.30,
+        0.39,
+        0.13,
+        "LULUS / YA\nPasang best.pt secara atomik ke models/best.pt;\nrestart API agar memuat bobot baru.",
+        "#e8f5e9",
+        8,
+    )
+    add_training_box(
+        0.53,
+        0.30,
+        0.39,
+        0.13,
+        "GAGAL / TIDAK\nPertahankan bobot layanan lama;\nprogram berakhir dengan exit code 2.",
+        "#fce8e6",
+        8,
+    )
+    add_training_arrow((gate_center, step_y), (0.275, 0.43))
+    add_training_arrow((gate_center, step_y), (0.725, 0.43))
+
+    add_training_box(
+        0.14,
+        0.105,
+        0.72,
+        0.10,
+        "SIMPAN HASIL\nreports/: JSON, TXT, CSV, dan training.log | "
+        "evaluation/final/: laporan, grafik, dan log evaluasi",
+        "#e7f1fb",
+        9,
+    )
+    add_training_arrow((0.275, 0.30), (0.40, 0.205))
+    add_training_arrow((0.725, 0.30), (0.60, 0.205))
+    training_figure.savefig(
+        training_image_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+    plt.close(training_figure)
+    return flowchart_path, image_path, training_image_path
+
+
+def simpan_laporan(run_dir: Path, report: JsonRecord) -> None:
     """Simpan laporan terstruktur JSON, CSV per kelas, dan ringkasan teks."""
     run_dir = Path(run_dir)
     reports_dir = Path(run_dir) / "reports"
     raw_dir = Path(run_dir) / "raw"
     reports_dir.mkdir(parents=True, exist_ok=True)
     raw_dir.mkdir(parents=True, exist_ok=True)
+    (
+        flowchart_path,
+        flowchart_image_path,
+        training_flowchart_image_path,
+    ) = _simpan_flowchart_backbone(reports_dir)
 
     for source_name in ("results.csv", "args.yaml"):
         source = run_dir / source_name
@@ -491,6 +990,10 @@ def simpan_laporan(run_dir, report):
         "validation_plots_dir": str(run_dir / "evaluation" / "val"),
         "detailed_evaluation_dir": report.get("detailed_evaluation_dir"),
         "best_checkpoint": report.get("checkpoint_best"),
+        "backbone_flowchart": str(flowchart_path),
+        "backbone_flowchart_image": str(flowchart_image_path),
+        "training_evaluation_flowchart": str(flowchart_path),
+        "training_evaluation_flowchart_image": str(training_flowchart_image_path),
     }
 
     (reports_dir / "training_report.json").write_text(
@@ -523,7 +1026,7 @@ def simpan_laporan(run_dir, report):
             f"{'Mask P':>10}{'Mask mAP50':>12}",
         ])
 
-        def format_target_metric(value):
+        def format_target_metric(value: Any) -> str:
             return f"{value:.4f}" if value is not None else "n/a"
 
         for class_name, metrics in target["per_class"].items():
@@ -544,7 +1047,7 @@ def simpan_laporan(run_dir, report):
             f"{'Mask mAP50':>12}{'Mask mAP50-95':>15}",
         ])
         for row in result["per_class"]:
-            def format_metric(value):
+            def format_metric(value: Any) -> str:
                 return f"{value:.4f}" if isinstance(value, (int, float)) else "n/a"
 
             lines.append(
@@ -592,9 +1095,9 @@ def simpan_laporan(run_dir, report):
     )
 
 
-def periksa_target(rows, report_dir):
-    metrics_by_class = {
-        row["kelas"]: {
+def periksa_target(rows: list[JsonRecord], report_dir: Path) -> JsonRecord:
+    metrics_by_class: dict[str, dict[str, Optional[float]]] = {
+        str(row["kelas"]): {
             metric: angka_json(row.get(metric))
             for metric in METRIK_TARGET
         }
@@ -608,7 +1111,7 @@ def periksa_target(rows, report_dir):
             f"Hasil evaluasi tidak mencakup semua kelas: {sorted(metrics_by_class)}"
         )
 
-    failures = [
+    failures: list[JsonRecord] = [
         {
             "kelas": class_name,
             "metrik": metric,
@@ -643,7 +1146,7 @@ def periksa_target(rows, report_dir):
     }
 
 
-def evaluasi_laporan(best, data_yaml, run_dir):
+def evaluasi_laporan(best: Path, data_yaml: Path, run_dir: Path) -> JsonRecord:
     """Jalankan evaluasi lengkap dengan laporan kelas, grafik, dan log."""
     output_dir = Path(run_dir) / "evaluation" / "final"
     command = [
@@ -692,11 +1195,11 @@ def evaluasi_laporan(best, data_yaml, run_dir):
     with (output_dir / "per_kelas.csv").open(
         encoding="utf-8-sig", newline=""
     ) as file:
-        rows = list(csv.DictReader(file))
+        rows = [cast(JsonRecord, row) for row in csv.DictReader(file)]
     return periksa_target(rows, output_dir)
 
 
-def pasang_model(best):
+def pasang_model(best: Path) -> Path:
     """Ganti bobot layanan secara atomik setelah seluruh target validasi lulus."""
     serving_model = MODELS_DIR / "best.pt"
     temporary_model = MODELS_DIR / f".best-{datetime.now():%Y%m%d%H%M%S%f}.tmp"
@@ -709,11 +1212,13 @@ def pasang_model(best):
     return serving_model
 
 
-def bersihkan_hasil_lama(run_dir, log_path):
+def bersihkan_hasil_lama(run_dir: Path, log_path: Path) -> None:
     """Hapus hanya artefak training/evaluasi VestCare yang sudah digantikan."""
     run_dir = Path(run_dir).resolve()
-    old_run = (ROOT / "runs" / "segment" / "runs" / "semua_kelas_yolo26n").resolve()
-    expected_parent = (ROOT / "runs" / "segment" / "runs").resolve()
+    old_run = (
+        ROOT / "data" / "results" / "runs" / "segment" / "runs" / "semua_kelas_yolo26n"
+    ).resolve()
+    expected_parent = (ROOT / "data" / "results" / "runs" / "segment" / "runs").resolve()
     if old_run != run_dir and old_run.parent == expected_parent and old_run.is_dir():
         shutil.rmtree(old_run)
         print(f"[INFO] Hasil training/evaluasi lama dihapus: {old_run}")
@@ -730,7 +1235,7 @@ def bersihkan_hasil_lama(run_dir, log_path):
             print(f"[INFO] Log training lama dihapus: {old_log}")
 
 
-def latih(data_yaml, run_name):
+def latih(data_yaml: Path, run_name: str) -> tuple[Path, Path]:
     if not torch.cuda.is_available():
         raise RuntimeError(
             "Training ini dikonfigurasi untuk GPU, tetapi CUDA tidak tersedia pada "
@@ -748,7 +1253,7 @@ def latih(data_yaml, run_name):
     print(f"[INFO] Resolusi       : {IMGSZ}px | batch: {BATCH} | epoch maks: {EPOCHS}")
     print("=" * 60 + "\n")
 
-    model = YOLO(MODEL)
+    model: Any = YOLO(MODEL)
     model.train(
         data=str(data_yaml),
         model=MODEL,
@@ -792,21 +1297,28 @@ def latih(data_yaml, run_name):
         mixup=MIXUP,
     )
 
-    best = Path(model.trainer.save_dir) / "weights" / "best.pt"
+    trainer = getattr(model, "trainer", None)
+    save_dir = getattr(trainer, "save_dir", None)
+    if not isinstance(save_dir, (str, Path)):
+        raise RuntimeError("Trainer YOLO tidak menyediakan direktori hasil training.")
+    run_dir = Path(save_dir)
+    best = run_dir / "weights" / "best.pt"
     if not best.is_file():
         raise FileNotFoundError(f"best.pt tidak ditemukan setelah training: {best}")
-    return Path(model.trainer.save_dir).resolve(), best.resolve()
+    return run_dir.resolve(), best.resolve()
 
 
-def main():
-    log_path = ROOT / f"training_semua_{datetime.now():%Y%m%d_%H%M%S_%f}.log"
+def main() -> int:
+    log_dir = ROOT / "data" / "results" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"training_semua_{datetime.now():%Y%m%d_%H%M%S_%f}.log"
     run_name = f"semua_kelas_yolo26n_{datetime.now():%Y%m%d_%H%M%S}"
-    run_dir = None
+    run_dir: Optional[Path] = None
     exit_code = 0
     try:
         with capture_console(log_path):
             data_yaml = buat_data_gabungan(run_name)
-            dataset = informasi_dataset(data_yaml)
+            dataset: JsonRecord = informasi_dataset(data_yaml)
             print(f"[INFO] Menggabungkan {len(DATASETS)} dataset utama ke satu proses training.")
             print(
                 f"[INFO] Kelas keluaran: {', '.join(EXPECTED_CLASSES.values())} | "
@@ -822,11 +1334,11 @@ def main():
             run_dir, best = latih(data_yaml, run_name)
             results_csv = run_dir / "results.csv"
             with results_csv.open(encoding="utf-8-sig", newline="") as file:
-                history = list(csv.DictReader(file))
+                history = [cast(JsonRecord, row) for row in csv.DictReader(file)]
             if not history:
                 raise ValueError(f"Tidak ada riwayat metrik training di {results_csv}")
 
-            report = {
+            report: JsonRecord = {
                 "model": MODEL,
                 "checkpoint_best": str(best),
                 "dataset_config": str(data_yaml),
@@ -845,10 +1357,10 @@ def main():
             }
             simpan_laporan(run_dir, report)
 
-            validation_model = YOLO(str(best))
+            validation_model: Any = YOLO(str(best))
             for split in ("val",):
                 print(f"\n[INFO] Evaluasi checkpoint terbaik pada split {split}...")
-                results = validation_model.val(
+                results: Any = validation_model.val(
                     data=str(data_yaml),
                     split=split,
                     imgsz=IMGSZ,

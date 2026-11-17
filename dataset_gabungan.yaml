@@ -1,6 +1,6 @@
-path: C:/dataset vestcare (rompi-cerdas)
-train: C:/dataset vestcare (rompi-cerdas)/runs/dataset_splits/train.txt
-val: C:/dataset vestcare (rompi-cerdas)/runs/dataset_splits/val.txt
+path: .
+train: data/results/runs/dataset_splits/train.txt
+val: data/results/runs/dataset_splits/val.txt
 names:
   0: pohon
   1: mobil
