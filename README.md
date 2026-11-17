@@ -408,6 +408,8 @@ Jika klip gerak belum tersedia, sistem memakai fallback `benda_{kelas}_{arah}_ne
 14. Jika Supabase belum lengkap atau sedang offline, dashboard memakai fallback `GET /riwayat`.
 15. Dashboard memuat ulang perangkat dan riwayat setiap 10 detik, sedangkan telemetri Wemos didorong lewat SSE `GET /api/telemetri/stream` setiap kali alat mengirim data (atau polling 1 detik bila SSE terputus). Hasil kamera terbaru langsung memperbarui tampilan tanpa menunggu polling.
 
+Saat dashboard dibuka, `CameraCapture` meminta `GET /suara/startup` untuk klip `jalur_aman` dari pustaka audio. Browser mencoba memutarnya otomatis; jika autoplay diblokir, dashboard menampilkan tombol **Putar suara**. FastAPI menyajikan klip MP3 melalui `GET /suara/{nama_berkas}`.
+
 ### Tabel alur data
 
 | Tahap | Komponen | Masukan | Keluaran | Media |

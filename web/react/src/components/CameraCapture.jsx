@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { normalizeDetections } from "../data";
 
 const API_URL = "/deteksi";
+const STARTUP_AUDIO_URL = "/suara/startup";
 const REALTIME_DETECTION_INTERVAL_MS = 80;
 const CAPTURE_MAX_WIDTH = 640;
 const CAPTURE_JPEG_QUALITY = 0.85;
@@ -103,6 +104,7 @@ export default function CameraCapture({ onDetections }) {
   const boxesRef = useRef(null);
   const audioRef = useRef(null);
   const silentAudioUrlRef = useRef(null);
+  const startupPlanRef = useRef(null);
   const audioUnlockedRef = useRef(false);
   const audioTokenRef = useRef(0);
   const cancelPlaybackRef = useRef(null);
@@ -115,6 +117,8 @@ export default function CameraCapture({ onDetections }) {
   const [liveDetections, setLiveDetections] = useState([]);
   const [status, setStatus] = useState("idle");
   const [message, setMessage] = useState("");
+  const [startupAudioPending, setStartupAudioPending] = useState(false);
+  const [startupAudioMessage, setStartupAudioMessage] = useState("");
 
   useEffect(() => {
     onDetectionsRef.current = onDetections;
@@ -236,6 +240,82 @@ export default function CameraCapture({ onDetections }) {
       }
     }
   }
+
+  async function playStartupPlan(plan) {
+    if (!plan || !Array.isArray(plan.segmen) || !plan.segmen.length) {
+      setStartupAudioMessage("Klip suara pembuka tidak tersedia.");
+      return;
+    }
+
+    stopAudio();
+    const token = audioTokenRef.current;
+    try {
+      for (const segment of plan.segmen) {
+        if (token !== audioTokenRef.current) return;
+        await playUrl(segment.url);
+      }
+      if (token === audioTokenRef.current) {
+        audioUnlockedRef.current = true;
+        startupPlanRef.current = null;
+        setStartupAudioPending(false);
+        setStartupAudioMessage("");
+      }
+    } catch {
+      if (token !== audioTokenRef.current) return;
+      startupPlanRef.current = plan;
+      setStartupAudioPending(true);
+      setStartupAudioMessage("Suara pembuka tidak dapat diputar otomatis. Tekan Putar suara untuk mencoba kembali.");
+    }
+  }
+
+  async function activateStartupAudio() {
+    const plan = startupPlanRef.current;
+    if (!plan) return;
+
+    if (!await unlockAudio()) {
+      setStartupAudioPending(true);
+      setStartupAudioMessage("Suara belum diizinkan browser. Periksa izin dan volume perangkat.");
+      return;
+    }
+    await playStartupPlan(plan);
+  }
+
+  useEffect(() => {
+    let active = true;
+    const controller = new AbortController();
+
+    async function playWelcomeAudio() {
+      try {
+        const response = await fetch(STARTUP_AUDIO_URL, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error(`Server suara mengembalikan ${response.status}.`);
+        }
+        const payload = await response.json();
+        if (!payload.suara) {
+          throw new Error("Server tidak mengirim rencana suara pembuka.");
+        }
+        if (!active) return;
+
+        startupPlanRef.current = payload.suara;
+        await playStartupPlan(payload.suara);
+      } catch (error) {
+        if (!active || controller.signal.aborted) return;
+        setStartupAudioMessage(
+          `Suara pembuka tidak tersedia: ${error instanceof Error ? error.message : "gagal dimuat."}`,
+        );
+      }
+    }
+
+    void playWelcomeAudio();
+    return () => {
+      active = false;
+      controller.abort();
+      stopAudio();
+    };
+  }, []);
 
   useEffect(() => {
     if (status !== "camera") return undefined;
@@ -516,6 +596,19 @@ export default function CameraCapture({ onDetections }) {
 
   return (
     <>
+      {startupAudioMessage && (
+        <div
+          className={`vc-startup-audio${startupAudioPending ? "" : " is-error"}`}
+          role={startupAudioPending ? "status" : "alert"}
+        >
+          <span>{startupAudioMessage}</span>
+          {startupAudioPending && (
+            <button type="button" className="vc-startup-audio-button" onClick={activateStartupAudio}>
+              Putar suara
+            </button>
+          )}
+        </div>
+      )}
       <button
         type="button"
         className="vc-camera-fab"

@@ -1151,6 +1151,20 @@ def pratinjau_suara(
     return {"suara": rencana}
 
 
+@app.get("/suara/startup")
+def suara_startup(
+    request: Request,
+    x_api_key: Optional[str] = Header(None),
+) -> JsonRecord:
+    _cek_api_key(request, x_api_key)
+    if perencana_suara is None:
+        raise HTTPException(status_code=503, detail="Pustaka suara Ardi belum tersedia.")
+    rencana = perencana_suara.susun([])
+    if rencana is None:
+        raise HTTPException(status_code=404, detail="Klip suara jalur aman tidak tersedia.")
+    return {"suara": rencana}
+
+
 @app.get("/suara/{nama_berkas}", include_in_schema=False)
 def berkas_suara(
     nama_berkas: str,
