@@ -394,10 +394,11 @@ Jika klip gerak belum tersedia, sistem memakai fallback `benda_{kelas}_{arah}_ne
 
 1. Browser membuka `/` atau `/app`. FastAPI menyajikan build React dari `web/react/dist/`.
 2. Jika `VEST_API_KEY` aktif, server memasang cookie sesi HttpOnly bernama `vestcare_sesi`.
-3. Komponen `CameraCapture` membuka kamera dan mengirim frame ke `POST /deteksi` sekitar satu kali per detik.
+3. Komponen `CameraCapture` membuka kamera dan mengirim frame ke `POST /deteksi` sekitar satu kali per detik. Pratinjau mempertahankan seluruh bidang gambar (tanpa crop/zoom), dan model membatasi deteksi ke lima kelas target: pohon, mobil, motor, orang, dan lubang.
 4. Setiap request divalidasi dengan `X-API-Key` atau cookie sesi. Ukuran gambar dibatasi 10 MB dan resolusi 40 megapiksel.
 5. Server menjalankan YOLO26n-seg, fuzzy Sugeno, pelacak gerak, dan perencana suara.
 6. Respons berisi daftar deteksi, level tertinggi, urgensi, status ragu, dan rencana suara.
+   Objek di luar lima kelas utama, seperti helm, dapat dimasukkan sebagai data penunjang di `data/datasets/penunjang/dataset_helm.zip`; saat training, labelnya dipetakan ke kelas internal dan tidak ditampilkan sebagai kelas utama. Model perlu dilatih ulang dengan contoh helm agar dapat menahan prediksi helm yang keliru sebagai mobil.
 7. Server menulis riwayat ke `data/runtime/riwayat.jsonl`.
 8. Server menyinkronkan deteksi ke Supabase melalui REST API dengan service-role key.
 9. Saat startup, server memakai perangkat yang sudah tercatat di tabel `devices` (atau `VEST_SUPABASE_DEVICE_ID` bila diisi); perangkat baru hanya dibuat jika belum ada.
@@ -408,7 +409,7 @@ Jika klip gerak belum tersedia, sistem memakai fallback `benda_{kelas}_{arah}_ne
 14. Jika Supabase belum lengkap atau sedang offline, dashboard memakai fallback `GET /riwayat`.
 15. Dashboard memuat ulang perangkat dan riwayat setiap 10 detik, sedangkan telemetri Wemos didorong lewat SSE `GET /api/telemetri/stream` setiap kali alat mengirim data (atau polling 1 detik bila SSE terputus). Hasil kamera terbaru langsung memperbarui tampilan tanpa menunggu polling.
 
-Saat dashboard dibuka, `CameraCapture` meminta `GET /suara/startup` untuk klip `jalur_aman` dari pustaka audio. Browser mencoba memutarnya otomatis; jika autoplay diblokir, dashboard menampilkan tombol **Putar suara**. FastAPI menyajikan klip MP3 melalui `GET /suara/{nama_berkas}`.
+Audio bukan diputar saat dashboard dimulai. Setelah deteksi objek, `POST /deteksi` mengembalikan rencana suara yang dipilih dari cache Ardi di `data/runtime/audio/cache_ardi`; `CameraCapture` memutar segmen yang sesuai dengan objek dan hasil deteksi melalui `GET /suara/{nama_berkas}`.
 
 ### Tabel alur data
 

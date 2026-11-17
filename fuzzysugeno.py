@@ -53,6 +53,7 @@ JARAK_TAK_DIKETAHUI_M = 2.0
 
 SETENGAH_KORIDOR_M = 0.45
 CONF_MIN_KELAS = {"lubang": 0.80}
+IOU_TOLAK_PENUNJANG = 0.50
 
 CONF_RAGU_DEFAULT = 0.50
 
@@ -478,6 +479,18 @@ class PelacakGerak:
         return daftar
 
 
+def iou_xyxy(a: Sequence[float], b: Sequence[float]) -> float:
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    intersection = ix * iy
+    union = (
+        (a[2] - a[0]) * (a[3] - a[1])
+        + (b[2] - b[0]) * (b[3] - b[1])
+        - intersection
+    )
+    return intersection / union if union > 0 else 0.0
+
+
 def analisis_hasil(
     res: Any,
     jarak_fn: Optional[Callable[[Sequence[float], str], Optional[float]]] = None,
@@ -495,6 +508,10 @@ def analisis_hasil(
 
     if res.boxes is not None and len(res.boxes) > 0:
         polys = res.masks.xy if res.masks is not None else [None] * len(res.boxes)
+        penunjang: list[tuple[list[float], float]] = []
+        for box in res.boxes:
+            if int(box.cls) in KELAS_INTERNAL_MODEL and float(box.conf) >= conf_min:
+                penunjang.append((box.xyxy[0].tolist(), float(box.conf)))
 
         for index, box in enumerate(res.boxes):
             poly = polys[index] if index < len(polys) else None
@@ -513,6 +530,12 @@ def analisis_hasil(
                 continue
 
             xyxy = box.xyxy[0].tolist()
+            if any(
+                support_conf >= conf - 0.05
+                and iou_xyxy(xyxy, support_box) >= IOU_TOLAK_PENUNJANG
+                for support_box, support_conf in penunjang
+            ):
+                continue
             bbox = [
                 round(max(0.0, min(1.0, float(xyxy[0]) / w)), 4),
                 round(max(0.0, min(1.0, float(xyxy[1]) / h)), 4),

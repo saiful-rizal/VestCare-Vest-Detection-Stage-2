@@ -121,7 +121,13 @@ DEFAULT_CONF = 0.35
 DEFAULT_CONF_RAGU = 0.50
 DEFAULT_IMGSZ = 512
 
-from fuzzysugeno import KELAS_ID_KE_NAMA, PelacakGerak, analisis_hasil, validasi_nama_kelas
+from fuzzysugeno import (
+    KELAS_ID_KE_NAMA,
+    KELAS_INTERNAL_MODEL,
+    PelacakGerak,
+    analisis_hasil,
+    validasi_nama_kelas,
+)
 from ultralytics import YOLO
 
 
@@ -169,7 +175,12 @@ class InferensiVest:
             Mapping[int, str] | list[str] | tuple[str, ...],
             self.model.names,
         )
-        validasi_nama_kelas(nama_kelas)
+        nama_kelas_valid = validasi_nama_kelas(nama_kelas)
+        self.kelas_prediksi = sorted(
+            class_id
+            for class_id in nama_kelas_valid
+            if class_id in KELAS_ID_KE_NAMA or class_id in KELAS_INTERNAL_MODEL
+        )
 
     def deteksi_gambar(self, gambar: np.ndarray, jarak_us: Optional[float] = None,
                        conf_min: Optional[float] = None) -> HasilInferensi:
@@ -182,7 +193,7 @@ class InferensiVest:
             source=gambar,
             imgsz=self.imgsz,
             conf=conf,
-            classes=sorted(KELAS_ID_KE_NAMA),
+            classes=self.kelas_prediksi,
             verbose=False,
         )
         hasil_model = next(iter(prediksi), None)
@@ -1148,20 +1159,6 @@ def pratinjau_suara(
     rencana = perencana_suara.contoh()
     if rencana is None:
         raise HTTPException(status_code=404, detail="Klip contoh tidak tersedia.")
-    return {"suara": rencana}
-
-
-@app.get("/suara/startup")
-def suara_startup(
-    request: Request,
-    x_api_key: Optional[str] = Header(None),
-) -> JsonRecord:
-    _cek_api_key(request, x_api_key)
-    if perencana_suara is None:
-        raise HTTPException(status_code=503, detail="Pustaka suara Ardi belum tersedia.")
-    rencana = perencana_suara.susun([])
-    if rencana is None:
-        raise HTTPException(status_code=404, detail="Klip suara jalur aman tidak tersedia.")
     return {"suara": rencana}
 
 
