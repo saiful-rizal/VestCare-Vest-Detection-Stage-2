@@ -45,8 +45,8 @@ VAL_FRACTION = 0.10
 
 EPOCHS = 100
 IMGSZ = 512
-BATCH = 4
-WORKERS = 0
+BATCH = 32
+WORKERS = 4
 DEVICE = "0"
 PROJECT = str(ROOT / "data" / "results" / "runs")
 EXIST_OK = False
@@ -54,8 +54,6 @@ EXIST_OK = False
 PATIENCE = 50
 MIN_METRIK_PER_KELAS = 0.98
 METRIK_TARGET = ("box_p", "box_map50", "mask_p", "mask_map50")
-SEED_LATIH = 0
-DETERMINISTIC = True
 CACHE = False
 AMP = True
 
@@ -572,7 +570,7 @@ flowchart LR
 ```
 
 - Dataset utama dibagi per kelompok gambar; data penunjang hanya ditambahkan ke train.
-- Training memakai ukuran gambar 512, batch 4, maksimum 100 epoch, GPU 0, AdamW, dan patience 50.
+- Training memakai ukuran gambar 512, batch 32, 4 worker, maksimum 100 epoch, GPU 0, AdamW, dan patience 50.
 - Evaluasi detail memakai split `val`. Quality gate memeriksa `box_p`, `box_map50`, `mask_p`, dan `mask_map50` untuk setiap kelas target; semua nilai harus minimal 98%.
 - Jika quality gate gagal, model layanan yang lama tidak diganti.
 """,
@@ -884,7 +882,7 @@ flowchart LR
             "#e8f5e9",
         ),
         (
-            "TRAIN YOLO26N-SEG\nGPU 0; gambar 512; batch 4;\nmaks. 100 epoch;\nAdamW; patience 50",
+            "TRAIN YOLO26N-SEG\nGPU 0; gambar 512; batch 32;\n4 worker; maks. 100 epoch;\nAdamW; patience 50",
             "#f0eafa",
         ),
         (
@@ -1250,7 +1248,10 @@ def latih(data_yaml: Path, run_name: str) -> tuple[Path, Path]:
     print(f"[INFO] model          : {MODEL}")
     print(f"[INFO] device         : {DEVICE}")
     print(f"[INFO] GPU            : {torch.cuda.get_device_name(int(DEVICE))}")
-    print(f"[INFO] Resolusi       : {IMGSZ}px | batch: {BATCH} | epoch maks: {EPOCHS}")
+    print(
+        f"[INFO] Resolusi       : {IMGSZ}px | batch: {BATCH} | "
+        f"workers: {WORKERS} | epoch maks: {EPOCHS}"
+    )
     print("=" * 60 + "\n")
 
     model: Any = YOLO(MODEL)
@@ -1268,8 +1269,8 @@ def latih(data_yaml: Path, run_name: str) -> tuple[Path, Path]:
         exist_ok=EXIST_OK,
         verbose=True,
         patience=PATIENCE,
-        seed=SEED_LATIH,
-        deterministic=DETERMINISTIC,
+        seed=random.SystemRandom().randrange(2**32),
+        deterministic=False,
         cache=CACHE,
         amp=AMP,
         optimizer=OPTIMIZER,

@@ -1,6 +1,6 @@
 path: C:/dataset vestcare (rompi-cerdas)
-train: C:/dataset vestcare (rompi-cerdas)/data/results/runs/dataset_splits/semua_kelas_yolo26n_20261117_181331/train.txt
-val: C:/dataset vestcare (rompi-cerdas)/data/results/runs/dataset_splits/semua_kelas_yolo26n_20261117_181331/val.txt
+train: C:/dataset vestcare (rompi-cerdas)/data/results/runs/dataset_splits/semua_kelas_yolo26n_20261117_182633/train.txt
+val: C:/dataset vestcare (rompi-cerdas)/data/results/runs/dataset_splits/semua_kelas_yolo26n_20261117_182633/val.txt
 names:
   0: pohon
   1: mobil
