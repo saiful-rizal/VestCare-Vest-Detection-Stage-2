@@ -1,0 +1,330 @@
+{
+  "model": "yolo26n-seg.pt",
+  "checkpoint_best": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\weights\\best.pt",
+  "dataset_config": "C:\\dataset vestcare (rompi-cerdas)\\dataset_gabungan.yaml",
+  "dataset": {
+    "train": {
+      "image_count": 2778,
+      "sources": [
+        "C:/dataset vestcare (rompi-cerdas)/runs/dataset_splits/train.txt"
+      ]
+    },
+    "val": {
+      "image_count": 312,
+      "sources": [
+        "C:/dataset vestcare (rompi-cerdas)/runs/dataset_splits/val.txt"
+      ]
+    },
+    "train_val_image_overlap_count": 0
+  },
+  "classes": {
+    "0": "pohon",
+    "1": "mobil",
+    "2": "motor",
+    "3": "orang",
+    "4": "lubang"
+  },
+  "training": {
+    "epochs_requested": 100,
+    "epochs_completed": 100,
+    "last_epoch": "100",
+    "last_epoch_metrics": {
+      "epoch": "100",
+      "time": "29825.4",
+      "train/box_loss": "0.81905",
+      "train/seg_loss": "1.19443",
+      "train/cls_loss": "0.48865",
+      "train/l1_loss": "0.00821",
+      "train/sem_loss": "0.16891",
+      "metrics/precision(B)": "0.88227",
+      "metrics/recall(B)": "0.77763",
+      "metrics/mAP50(B)": "0.8493",
+      "metrics/mAP50-95(B)": "0.64305",
+      "metrics/precision(M)": "0.90166",
+      "metrics/recall(M)": "0.76424",
+      "metrics/mAP50(M)": "0.84035",
+      "metrics/mAP50-95(M)": "0.61078",
+      "val/box_loss": "1.08035",
+      "val/seg_loss": "1.63396",
+      "val/cls_loss": "0.7739",
+      "val/l1_loss": "0.01567",
+      "val/sem_loss": "0",
+      "lr/pg0": "1.99e-05",
+      "lr/pg1": "1.99e-05",
+      "lr/pg2": "1.99e-05"
+    },
+    "results_csv": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\results.csv",
+    "args_yaml": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\args.yaml"
+  },
+  "validation": {
+    "val": {
+      "overall": {
+        "metrics/precision(B)": 0.8850734184435352,
+        "metrics/recall(B)": 0.7805736969039915,
+        "metrics/mAP50(B)": 0.8539829367863725,
+        "metrics/mAP50-95(B)": 0.6476855973686102,
+        "metrics/precision(M)": 0.8902456090770972,
+        "metrics/recall(M)": 0.7821941168477433,
+        "metrics/mAP50(M)": 0.8492560575568179,
+        "metrics/mAP50-95(M)": 0.6105370743416991,
+        "fitness": 1.2582226717103093
+      },
+      "per_class": [
+        {
+          "class_id": 0,
+          "class_name": "pohon",
+          "images": 76,
+          "instances": 76,
+          "box_precision": 0.984631,
+          "box_recall": 1.0,
+          "box_f1": 0.992256,
+          "box_map50": 0.995,
+          "box_map75": 0.984211,
+          "box_map50_95": 0.904429,
+          "mask_precision": 0.985145,
+          "mask_recall": 1.0,
+          "mask_f1": 0.992517,
+          "mask_map50": 0.995,
+          "mask_map75": 0.9400847841528956,
+          "mask_map50_95": 0.8758161360867067
+        },
+        {
+          "class_id": 1,
+          "class_name": "mobil",
+          "images": 87,
+          "instances": 269,
+          "box_precision": 0.897723,
+          "box_recall": 0.750481,
+          "box_f1": 0.817525,
+          "box_map50": 0.845692,
+          "box_map75": 0.640266,
+          "box_map50_95": 0.585596,
+          "mask_precision": 0.910911,
+          "mask_recall": 0.760205,
+          "mask_f1": 0.828762,
+          "mask_map50": 0.8529078219460373,
+          "mask_map75": 0.6300706077553889,
+          "mask_map50_95": 0.5620310725137931
+        },
+        {
+          "class_id": 2,
+          "class_name": "motor",
+          "images": 61,
+          "instances": 358,
+          "box_precision": 0.912926,
+          "box_recall": 0.790733,
+          "box_f1": 0.847447,
+          "box_map50": 0.888233,
+          "box_map75": 0.700185,
+          "box_map50_95": 0.638551,
+          "mask_precision": 0.951451,
+          "mask_recall": 0.821139,
+          "mask_f1": 0.881505,
+          "mask_map50": 0.9213785147050739,
+          "mask_map75": 0.6027263801701382,
+          "mask_map50_95": 0.5763161863595799
+        },
+        {
+          "class_id": 3,
+          "class_name": "orang",
+          "images": 93,
+          "instances": 281,
+          "box_precision": 0.858278,
+          "box_recall": 0.736655,
+          "box_f1": 0.792829,
+          "box_map50": 0.81027,
+          "box_map75": 0.630466,
+          "box_map50_95": 0.586685,
+          "mask_precision": 0.826898,
+          "mask_recall": 0.704626,
+          "mask_f1": 0.760881,
+          "mask_map50": 0.763896690251269,
+          "mask_map75": 0.5724732103668546,
+          "mask_map50_95": 0.5225008253737433
+        },
+        {
+          "class_id": 4,
+          "class_name": "lubang",
+          "images": 60,
+          "instances": 88,
+          "box_precision": 0.771809,
+          "box_recall": 0.625,
+          "box_f1": 0.69069,
+          "box_map50": 0.730719,
+          "box_map75": 0.62975,
+          "box_map50_95": 0.523168,
+          "mask_precision": 0.776822,
+          "mask_recall": 0.625,
+          "mask_f1": 0.69269,
+          "mask_map50": 0.7130972608817091,
+          "mask_map75": 0.5648198368169928,
+          "mask_map50_95": 0.5160211513746721
+        }
+      ],
+      "speed_ms_per_image": {
+        "preprocess": 0.36668846162986785,
+        "inference": 6.419077564108496,
+        "loss": 0.0018185899254883854,
+        "postprocess": 2.8340996797431637
+      },
+      "artifacts_dir": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\evaluation\\val"
+    }
+  },
+  "console_log": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\training.log",
+  "artifacts": {
+    "raw_dir": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\raw",
+    "reports_dir": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\reports",
+    "training_metrics_csv": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\results.csv",
+    "raw_training_metrics_csv": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\raw\\results.csv",
+    "training_log": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\training.log",
+    "raw_training_log": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\raw\\training.log",
+    "epoch_metrics_plot": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\results.png",
+    "validation_plots_dir": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\evaluation\\val",
+    "detailed_evaluation_dir": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\evaluation\\final",
+    "best_checkpoint": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\weights\\best.pt"
+  },
+  "quality_gate": {
+    "passed": false,
+    "threshold": 0.98,
+    "metrics": [
+      "box_p",
+      "box_map50",
+      "mask_p",
+      "mask_map50"
+    ],
+    "per_class": {
+      "pohon": {
+        "box_p": 0.9846308092896334,
+        "box_map50": 0.995,
+        "mask_p": 0.9852311366998912,
+        "mask_map50": 0.995
+      },
+      "mobil": {
+        "box_p": 0.8977227397813299,
+        "box_map50": 0.8456219367043477,
+        "mask_p": 0.9153411133010018,
+        "mask_map50": 0.8448957447049819
+      },
+      "motor": {
+        "box_p": 0.9129262729881418,
+        "box_map50": 0.8882323616367929,
+        "mask_p": 0.9481858585069705,
+        "mask_map50": 0.9181640452954154
+      },
+      "orang": {
+        "box_p": 0.8582778957590607,
+        "box_map50": 0.8081254651312417,
+        "mask_p": 0.8273520603209127,
+        "mask_map50": 0.762822789011519
+      },
+      "lubang": {
+        "box_p": 0.7718100560598334,
+        "box_map50": 0.7336184048899628,
+        "mask_p": 0.7777103420439897,
+        "mask_map50": 0.7168736148499693
+      }
+    },
+    "failures": [
+      {
+        "kelas": "mobil",
+        "metrik": "box_p",
+        "nilai": 0.8977227397813299,
+        "ambang": 0.98
+      },
+      {
+        "kelas": "mobil",
+        "metrik": "box_map50",
+        "nilai": 0.8456219367043477,
+        "ambang": 0.98
+      },
+      {
+        "kelas": "mobil",
+        "metrik": "mask_p",
+        "nilai": 0.9153411133010018,
+        "ambang": 0.98
+      },
+      {
+        "kelas": "mobil",
+        "metrik": "mask_map50",
+        "nilai": 0.8448957447049819,
+        "ambang": 0.98
+      },
+      {
+        "kelas": "motor",
+        "metrik": "box_p",
+        "nilai": 0.9129262729881418,
+        "ambang": 0.98
+      },
+      {
+        "kelas": "motor",
+        "metrik": "box_map50",
+        "nilai": 0.8882323616367929,
+        "ambang": 0.98
+      },
+      {
+        "kelas": "motor",
+        "metrik": "mask_p",
+        "nilai": 0.9481858585069705,
+        "ambang": 0.98
+      },
+      {
+        "kelas": "motor",
+        "metrik": "mask_map50",
+        "nilai": 0.9181640452954154,
+        "ambang": 0.98
+      },
+      {
+        "kelas": "orang",
+        "metrik": "box_p",
+        "nilai": 0.8582778957590607,
+        "ambang": 0.98
+      },
+      {
+        "kelas": "orang",
+        "metrik": "box_map50",
+        "nilai": 0.8081254651312417,
+        "ambang": 0.98
+      },
+      {
+        "kelas": "orang",
+        "metrik": "mask_p",
+        "nilai": 0.8273520603209127,
+        "ambang": 0.98
+      },
+      {
+        "kelas": "orang",
+        "metrik": "mask_map50",
+        "nilai": 0.762822789011519,
+        "ambang": 0.98
+      },
+      {
+        "kelas": "lubang",
+        "metrik": "box_p",
+        "nilai": 0.7718100560598334,
+        "ambang": 0.98
+      },
+      {
+        "kelas": "lubang",
+        "metrik": "box_map50",
+        "nilai": 0.7336184048899628,
+        "ambang": 0.98
+      },
+      {
+        "kelas": "lubang",
+        "metrik": "mask_p",
+        "nilai": 0.7777103420439897,
+        "ambang": 0.98
+      },
+      {
+        "kelas": "lubang",
+        "metrik": "mask_map50",
+        "nilai": 0.7168736148499693,
+        "ambang": 0.98
+      }
+    ],
+    "report_dir": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\evaluation\\final",
+    "deployed": false,
+    "serving_model": "C:\\dataset vestcare (rompi-cerdas)\\models\\best.pt"
+  },
+  "detailed_evaluation_dir": "C:\\dataset vestcare (rompi-cerdas)\\runs\\segment\\runs\\semua_kelas_yolo26n_20261107_154452\\evaluation\\final"
+}
