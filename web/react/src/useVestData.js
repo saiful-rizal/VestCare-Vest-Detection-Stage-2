@@ -338,11 +338,15 @@ export default function useVestData() {
           : toPosition(rows.find((row) => row.lat != null && row.lng != null));
 
         let history = null;
+        let latestHistoryDetections = null;
         let historyPositionValue = null;
         try {
           const historyPayload = await getJson("/riwayat?limit=20");
           if (Array.isArray(historyPayload.data)) {
             history = historyPayload.data.flatMap((entry) => normalizeDetections(entry)).slice(0, 20);
+            latestHistoryDetections = historyPayload.data.length
+              ? normalizeDetections(historyPayload.data[0])
+              : [];
             historyPositionValue = historyPosition(historyPayload.data[0]);
           }
         } catch {
@@ -377,9 +381,11 @@ export default function useVestData() {
             }
           }
 
-          const detections = rows.length
-            ? sortByRisk(normalizeDetections(latestBatch(rows)))
-            : current.detections;
+          const detections = latestHistoryDetections !== null
+            ? sortByRisk(latestHistoryDetections)
+            : rows.length
+              ? sortByRisk(normalizeDetections(latestBatch(rows)))
+              : current.detections;
           const nextHistory = history?.length ? history : current.history;
 
           return {

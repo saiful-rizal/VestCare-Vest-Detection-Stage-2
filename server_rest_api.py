@@ -104,6 +104,12 @@ LATEST_TELEMETRI: dict[str, Any] = {
 latest_gps_log_at = 0.0
 last_device_update_at = 0.0
 
+LATEST_DETEKSI_LOCK = threading.Lock()
+LATEST_DETEKSI: dict[str, Any] = {
+    "updated_at": 0.0,
+    "data": None,
+}
+
 TELEMETRI_JALUR_LOCK = threading.Lock()
 TELEMETRI_JALUR: deque[dict[str, Any]] = deque(maxlen=300)
 
@@ -1359,7 +1365,40 @@ def konfigurasi_publik() -> JsonRecord:
         "telemetri_stream": "/api/telemetri/stream",
         "telemetri_poll_ms": 1000,
         "dashboard_poll_ms": 10000,
+        "esp32_stream": "/esp32/stream",
     }
+
+
+@app.get("/esp32/stream", include_in_schema=False)
+async def esp32_stream(request: Request) -> StreamingResponse:
+    stream_url = os.environ.get("VEST_ESP32_STREAM_URL", "").strip()
+    if not stream_url:
+        raise HTTPException(
+            status_code=503,
+            detail="VEST_ESP32_STREAM_URL belum diatur. Contoh: http://192.168.1.50:81/stream",
+        )
+
+    upstream = urlopen(
+        UrlRequest(stream_url, headers={"ngrok-skip-browser-warning": "1"}),
+        timeout=10,
+    )
+    content_type = upstream.headers.get("Content-Type", "multipart/x-mixed-replace")
+
+    async def stream() -> AsyncGenerator[bytes, None]:
+        try:
+            while not await request.is_disconnected():
+                chunk = await run_in_threadpool(upstream.read, 4096)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            upstream.close()
+
+    return StreamingResponse(
+        stream(),
+        media_type=content_type,
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/dashboard/data")
@@ -1367,6 +1406,8 @@ def dashboard_data(request: Request, x_api_key: Optional[str] = Header(None)) ->
     _cek_api_key(request, x_api_key)
     with LATEST_TELEMETRI_LOCK:
         live_telemetri = dict(LATEST_TELEMETRI)
+    with LATEST_DETEKSI_LOCK:
+        live_detection = dict(LATEST_DETEKSI)
     is_live_online = (time.time() - live_telemetri.get("updated_at", 0)) < 15.0
 
     try:
@@ -1424,6 +1465,12 @@ def dashboard_data(request: Request, x_api_key: Optional[str] = Header(None)) ->
         if live_telemetri.get("battery") is not None:
             device_result["battery"] = live_telemetri["battery"]
 
+    live_detection_updated = float(live_detection.get("updated_at") or 0)
+    live_detection_data = live_detection.get("data")
+    if live_detection_updated and (time.time() - live_detection_updated) < 30:
+        if isinstance(live_detection_data, dict):
+            detections = list(live_detection_data.get("deteksi") or [])
+
     gps_result: Optional[JsonRecord] = gps_rows[0] if gps_rows and not is_live_online else None
     if live_telemetri.get("fix") and live_telemetri.get("lat") is not None and live_telemetri.get("lng") is not None:
         gps_result = {
@@ -1471,6 +1518,9 @@ async def deteksi(
             "lat": tele["lat"],
             "lng": tele["lng"],
         }
+    with LATEST_DETEKSI_LOCK:
+        LATEST_DETEKSI["updated_at"] = time.time()
+        LATEST_DETEKSI["data"] = data
     if mode_realtime:
         return JSONResponse(data)
     entri = await run_in_threadpool(_simpan_riwayat, data, "deteksi")

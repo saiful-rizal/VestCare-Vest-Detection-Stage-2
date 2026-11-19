@@ -60,6 +60,7 @@ data/
 .env
 .env.local
 .env.*.local
+/hardware/arduino/esp32_s3/secrets.h
 
 # Data terpilih yang sebelumnya sudah dilacak, kini berada pada kategori data/
 !data/

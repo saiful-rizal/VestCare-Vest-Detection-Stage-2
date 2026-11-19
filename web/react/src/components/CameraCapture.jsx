@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { normalizeDetections } from "../data";
 
 const API_URL = "/deteksi";
+const ESP32_STREAM_URL = import.meta.env.VITE_ESP32_STREAM_URL || "/esp32/stream";
 const REALTIME_DETECTION_INTERVAL_MS = 80;
 const CAPTURE_MAX_WIDTH = 640;
 const CAPTURE_JPEG_QUALITY = 0.85;
@@ -253,6 +254,45 @@ export default function CameraCapture({ onDetections }) {
   }, [status]);
 
   useEffect(() => {
+    if (status !== "esp32") return undefined;
+
+    let active = true;
+    let timer;
+
+    async function refreshDetections() {
+      try {
+        const response = await fetch("/dashboard/data", {
+          credentials: "same-origin",
+          cache: "no-store",
+          headers: { "ngrok-skip-browser-warning": "1" },
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!active) return;
+        if (!response.ok) throw new Error(payload.detail || `Server mengembalikan ${response.status}.`);
+
+        const detections = normalizeDetections(payload);
+        setLiveDetections(detections);
+        onDetectionsRef.current(detections);
+        setMessage(detections.length
+          ? `${detections.length} objek terdeteksi dari kamera ESP32.`
+          : "Kamera ESP32 aktif. Belum ada objek yang yakin.");
+      } catch (error) {
+        if (active) {
+          setMessage(error instanceof Error ? `Koneksi ESP32/API gagal: ${error.message}` : "Koneksi ESP32/API gagal.");
+        }
+      } finally {
+        if (active) timer = window.setTimeout(refreshDetections, 500);
+      }
+    }
+
+    void refreshDetections();
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [status]);
+
+  useEffect(() => {
     if (status !== "camera") return undefined;
 
     const previousOverflow = document.body.style.overflow;
@@ -427,6 +467,16 @@ export default function CameraCapture({ onDetections }) {
   }, [status]);
 
   async function openCamera() {
+    if (ESP32_STREAM_URL) {
+      await unlockAudio();
+      setStatus("esp32");
+      setMessage("Kamera ESP32 terhubung. Menunggu hasil deteksi API...");
+      setLiveDetections([]);
+      setPreview(null);
+      setFile(null);
+      return;
+    }
+
     if (!navigator.mediaDevices?.getUserMedia) {
       inputRef.current?.click();
       return;
@@ -583,6 +633,44 @@ export default function CameraCapture({ onDetections }) {
             <div className="vc-camera-footer flex justify-end gap-2 mt-4">
               <button type="button" className="vc-camera-secondary" onClick={closePreview}>Batal</button>
               <span className="vc-camera-live-status">● Deteksi otomatis aktif</span>
+            </div>
+          </div>
+        </div>
+      )}
+      {status === "esp32" && (
+        <div className="vc-camera-backdrop vc-camera-backdrop--fullscreen" role="dialog" aria-modal="true" aria-label="Kamera ESP32-S3">
+          <div className="vc-camera-dialog vc-camera-dialog--fullscreen">
+            <div className="vc-camera-header flex items-center justify-between mb-4">
+              <h2 className="mb-0 text-lg font-bold text-slate-800">Kamera ESP32-S3 VestCare</h2>
+              <button type="button" className="vc-camera-close" onClick={closePreview} aria-label="Tutup">×</button>
+            </div>
+            <div className="vc-camera-stage vc-camera-stage--fullscreen">
+              <img
+                className="vc-camera-preview"
+                src={ESP32_STREAM_URL}
+                alt="Live stream kamera ESP32-S3"
+              />
+              <span className="vc-camera-count" role="status">
+                {liveDetections.length} objek terdeteksi
+              </span>
+            </div>
+            {message && <p className="vc-camera-message" role="status">{message}</p>}
+            {liveDetections.length > 0 && (
+              <ul className="vc-camera-results">
+                {liveDetections.map((detection, index) => (
+                  <li key={Number.isFinite(detection.id) ? `id-${detection.id}` : `${detection.object}-${detection.arah}-${index}`}>
+                    <strong>{detection.level} | {labelObjek(detection)} {detection.arah}</strong>
+                    <span>
+                      {detection.distance.toFixed(1)} m | confidence {Math.round(detection.confidence)}%
+                      {labelGerak(detection) ? ` | ${labelGerak(detection)}` : ""}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="vc-camera-footer flex justify-end gap-2 mt-4">
+              <button type="button" className="vc-camera-secondary" onClick={closePreview}>Batal</button>
+              <span className="vc-camera-live-status">● ESP32 terhubung ke API</span>
             </div>
           </div>
         </div>
