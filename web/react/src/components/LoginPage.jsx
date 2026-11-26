@@ -30,6 +30,7 @@ function getGoogleErrorMessage(error) {
 
 export default function LoginPage({ initialError = "" }) {
   const [mode, setMode] = useState("login");
+  const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [passwordVisible, setPasswordVisible] = useState(false);
@@ -49,12 +50,23 @@ export default function LoginPage({ initialError = "" }) {
       return;
     }
 
+    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedFullName = fullName.trim();
+    if (mode === "signup" && !normalizedFullName) {
+      showMessage("Masukkan nama siswa terlebih dahulu.", true);
+      return;
+    }
+
     setSubmitting(true);
     showMessage("");
     try {
       const result = mode === "signup"
-        ? await supabase.auth.signUp({ email, password })
-        : await supabase.auth.signInWithPassword({ email, password });
+        ? await supabase.auth.signUp({
+          email: normalizedEmail,
+          password,
+          options: { data: { full_name: normalizedFullName } },
+        })
+        : await supabase.auth.signInWithPassword({ email: normalizedEmail, password });
 
       if (result.error) throw result.error;
       if (mode === "signup" && !result.data.session) {
@@ -178,6 +190,27 @@ export default function LoginPage({ initialError = "" }) {
           </div>
 
           <form className="vc-login-form" onSubmit={handleSubmit}>
+            {isSignup && (
+              <>
+                <label htmlFor="vc-login-full-name">Nama siswa</label>
+                <div className="vc-login-input-wrap">
+                  <svg aria-hidden="true" viewBox="0 0 24 24">
+                    <circle cx="12" cy="8" r="4" />
+                    <path d="M4 21a8 8 0 0 1 16 0" />
+                  </svg>
+                  <input
+                    autoComplete="name"
+                    id="vc-login-full-name"
+                    name="fullName"
+                    onChange={(event) => setFullName(event.target.value)}
+                    placeholder="Nama lengkap siswa"
+                    required
+                    type="text"
+                    value={fullName}
+                  />
+                </div>
+              </>
+            )}
             <label htmlFor="vc-login-email">Alamat email</label>
             <div className="vc-login-input-wrap">
               <svg aria-hidden="true" viewBox="0 0 24 24">
