@@ -16,9 +16,6 @@ from urllib.request import urlopen
 
 import uvicorn
 
-# server.py sudah menjalankan discovery UDP sendiri (termasuk URL Cloudflare
-# yang berubah dinamis). Matikan discovery bawaan aplikasi agar port 4211 tidak
-# dibuka dua kali saat mode lokal.
 os.environ.setdefault("VEST_ENABLE_LAN_DISCOVERY", "0")
 
 from server_rest_api import (
