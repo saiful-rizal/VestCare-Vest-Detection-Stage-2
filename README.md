@@ -2,95 +2,307 @@
   <img src="assets/vestcare-title.svg" alt="VestCare - Rompi Cerdas (Stage 2)" width="900">
 </p>
 
-Sistem peringatan rintangan untuk rompi cerdas berbasis segmentasi YOLO26n, logika fuzzy Sugeno, dan suara natural Bahasa Indonesia. Model mendeteksi lima kelas, yaitu pohon, mobil, motor, orang, dan lubang. Hasil deteksi dipetakan menjadi arah, jarak, tingkat risiko, instruksi suara, serta riwayat perangkat pada Supabase. Dashboard menampilkan posisi, jarak ultrasonik, dan telemetri GPS Wemos secara realtime pada peta Google Maps.
+# VestCare Stage 2 - Rompi Cerdas Pendeteksi Rintangan
+
+VestCare adalah sistem peringatan rintangan untuk rompi cerdas yang ditujukan bagi siswa tunanetra. Sistem menggabungkan segmentasi objek YOLO26n-seg, logika fuzzy Sugeno, suara natural Bahasa Indonesia, sensor ultrasonik, GPS, dan dashboard pemantauan berbasis React. Model mendeteksi lima kelas utama: **pohon, mobil, motor, orang, dan lubang**. Hasil deteksi dipetakan menjadi arah, jarak, tingkat urgensi, instruksi suara, dan sinyal peringatan ke perangkat.
+
+Jalur produksi yang didokumentasikan di README ini adalah **Railway** dengan satu service Docker yang menyajikan API FastAPI sekaligus dashboard React. Database opsional memakai **Supabase**, dan perangkat utama memakai **ESP32-S3 N16R8 + kamera OV3660**.
+
+> Catatan penting: quality gate 98% pada run final **belum terpenuhi**. Pipeline tidak mengganti bobot aktif secara otomatis (`passed: false`, `deployed: false`). `models/best.pt` adalah bobot yang dipilih untuk serving dan dipakai oleh API. Angka evaluasi di README ini berasal dari split validasi, bukan split test independen.
+
+## Daftar isi
+
+- [Ringkasan sistem](#ringkasan-sistem)
+- [Status artefak](#status-artefak)
+- [Arsitektur end-to-end](#arsitektur-end-to-end)
+- [Hardware dan firmware](#hardware-dan-firmware)
+- [Model dan training](#model-dan-training)
+- [Hasil evaluasi](#hasil-evaluasi)
+- [Logika fuzzy Sugeno](#logika-fuzzy-sugeno)
+- [API, dashboard, dan Supabase](#api-dashboard-dan-supabase)
+- [Pengujian end-to-end](#pengujian-end-to-end)
+- [Deploy Railway](#deploy-railway)
+- [Menjalankan lokal](#menjalankan-lokal)
+- [Struktur proyek](#struktur-proyek)
+- [Artefak dan log](#artefak-dan-log)
+- [Catatan dan batasan](#catatan-dan-batasan)
 
 ## Ringkasan sistem
 
 | Komponen | Keterangan |
 |---|---|
+| Nama sistem | VestCare Stage 2 - rompi cerdas pendeteksi rintangan |
+| Pengguna | Siswa tunanetra dan pendamping di lingkungan sekolah |
 | Model visi | YOLO26n-seg, 5 kelas, keluaran bounding box dan mask |
-| Logika keputusan | Fuzzy Sugeno orde-nol dengan 26 aturan |
-| Keluaran peringatan | Level AMAN, INFO, WASPADA, BAHAYA; getar; instruksi suara |
-| Suara | Klip Bahasa Indonesia dari `data/runtime/audio/cache_ardi` |
-| API | FastAPI, autentikasi API key atau cookie sesi HttpOnly |
-| Web | Dashboard React + Vite yang disajikan langsung oleh FastAPI |
-| Penyimpanan | Riwayat lokal JSONL dan sinkronisasi ke Supabase |
-| Perangkat | Satu perangkat virtual server dengan UUID tetap |
+| Kelas | `pohon`, `mobil`, `motor`, `orang`, `lubang` |
+| Logika keputusan | Fuzzy Sugeno orde-nol, 26 aturan, skor urgensi 0-100 |
+| Keluaran peringatan | Level `AMAN`, `INFO`, `WASPADA`, `BAHAYA`; rencana suara; sinyal `alert` 0/1/2 |
+| Suara | Klip Bahasa Indonesia `id-ID-ArdiNeural` dari `data/runtime/audio/cache_ardi` |
+| Perangkat | ESP32-S3 N16R8, kamera OV3660, HC-SR04, GPS UART, UART alert ke board TWS |
+| Server | FastAPI + Uvicorn, API key, cookie sesi HttpOnly, SSE |
+| Web | Dashboard React + Vite, disajikan langsung oleh FastAPI |
+| Penyimpanan | Riwayat lokal JSONL dan sinkronisasi opsional ke Supabase |
+| Database | Supabase: `devices`, `detections`, `gps_log`, `profiles` |
+| Deploy | Railway, Dockerfile multi-stage, health check `/readyz`, 1 replica |
+| Peta | Google Maps JavaScript API atau mode embed bila kunci belum diisi |
+| Autentikasi web | Supabase Auth (email/password atau Google) + cookie sesi API |
 
-## Hasil training terbaru
+## Status artefak
 
-Run yang dipublikasikan:
+| Item | Nilai |
+|---|---|
+| Run final | `data/results/run_final/` |
+| ID run | `semua_kelas_yolo26n_20261107_154452` |
+| Model aktif | `models/best.pt` |
+| Arsitektur bobot aktif | 310 layer, 3.084.955 parameter, 10,4 GFLOPs pada `imgsz=512` |
+| SHA-256 `models/best.pt` | `6c09ff5f41cc1a1b333604de0cdebb47b1a9eb2489084cac39e2d508db72d0c6` |
+| Bobot kandidat | `models/kandidat_20261116_071306.pt` (bukan bobot aktif) |
+| Dashboard produksi | `https://vestcare-detection-object-production.up.railway.app` |
+| Health check | `GET /readyz` |
+| Dokumentasi API | `GET /docs` |
+| Database | Supabase, migrasi di `supabase/migrations/` |
+| Quality gate | `passed: false`, `deployed: false`; bobot tidak diganti otomatis |
+| Evaluasi | Split validasi 312 gambar; tidak ada split test independen |
 
-```text
-data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/
+Angka model di atas diukur langsung dari `models/best.pt` memakai Ultralytics. Ringkasan awal training di log mencatat 309 layer, 3.054.875 parameter, dan 10,3 GFLOPs; setelah checkpoint aktif dimuat, struktur head end-to-end terbaca 310 layer, 3.084.955 parameter, dan 10,4 GFLOPs. Untuk kebutuhan serving, gunakan angka bobot aktif. Model fused untuk inferensi memiliki 137 layer, 2.704.755 parameter, dan 9,1 GFLOPs.
+
+## Arsitektur end-to-end
+
+```mermaid
+flowchart LR
+  subgraph Perangkat["Perangkat rompi"]
+    CAM["Kamera OV3660<br/>ESP32-S3"]
+    US["HC-SR04<br/>0,05-3,00 m"]
+    GPS["GPS UART<br/>RX 41 / TX 42"]
+    ALERT["UART ALERT<br/>GPIO 14"]
+    TWS["Board TWS<br/>ESP32 klasik"]
+  end
+
+  subgraph Server["Railway / FastAPI"]
+    API["POST /deteksi<br/>POST /api/telemetri"]
+    YOLO["YOLO26n-seg<br/>5 kelas"]
+    FUZZY["Fuzzy Sugeno<br/>26 aturan"]
+    AUDIO["Perencana suara<br/>klip Ardi"]
+    DB["Supabase<br/>devices, detections, gps_log"]
+    HIST["Riwayat JSONL<br/>/data/riwayat.jsonl"]
+  end
+
+  subgraph Klien["Dashboard"]
+    WEB["React + Vite<br/>Google Maps"]
+    BROW["Audio browser<br/>+ buzzer"]
+  end
+
+  CAM --> API
+  US --> API
+  GPS --> API
+  API --> YOLO --> FUZZY
+  FUZZY --> AUDIO
+  FUZZY --> ALERT --> TWS
+  API --> HIST
+  API --> DB
+  API --> WEB
+  AUDIO --> BROW
+  DB --> WEB
 ```
 
-### Konfigurasi training
+### Tanggung jawab komponen
 
-| Parameter | Nilai |
-|---|---|
-| Model dasar | `yolo26n-seg.pt` |
-| Epoch | 100 / 100 |
-| Image size | 512 |
-| Batch | 4 |
-| Optimizer | AdamW |
-| Learning rate awal | 0.001 |
-| Seed / deterministic | 0 / ya |
-| Device | GPU 0, NVIDIA GeForce GTX 1650 Max-Q |
-| Dataset train | 2.778 gambar |
-| Dataset validasi | 312 gambar |
-| Overlap train dan validasi | 0 gambar |
-| Waktu training | 29.825,4 detik atau sekitar 8,28 jam |
-| Checkpoint terbaik | `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/weights/best.pt` |
-
-### Hyperparameter lengkap run
-
-Nilai berikut berasal dari `args.yaml` run tersebut dan konfigurasi yang diberikan oleh `train_semua.py`.
-
-| Kelompok | Parameter | Nilai |
+| Lapisan | Komponen | Tanggung jawab |
 |---|---|---|
-| Reproduksibilitas | Seed split / training | `0` / `0` |
-| Reproduksibilitas | Deterministic | `True` |
-| Reproduksibilitas | Cache / AMP | `False` / `True` |
-| Eksekusi | Task / pretrained | Segmentasi / `True` |
-| Eksekusi | Epoch maksimum / patience | `100` / `50` |
-| Eksekusi | Batch / image size | `4` / `512` |
-| Eksekusi | Device / workers | GPU `0` / `0` |
-| Optimisasi | Optimizer | `AdamW` |
-| Optimisasi | `lr0` / `lrf` | `0.001` / `0.01` |
-| Optimisasi | Momentum / weight decay | `0.937` / `0.0005` |
-| Optimisasi | Label smoothing | `0.1` |
-| Warmup | Epoch / momentum / bias LR | `3.0` / `0.8` / `0.1` |
-| Loss | Box / cls / DFL | `7.5` / `0.5` / `1.5` |
-| Augmentasi warna | HSV H / S / V | `0.015` / `0.7` / `0.4` |
-| Augmentasi geometri | Degrees / translate / scale | `10` / `0.1` / `0.5` |
-| Augmentasi geometri | Shear / perspective | `0` / `0` |
-| Flip | Horizontal / vertikal | `0.5` / `0` |
-| Augmentasi gambar | Mosaic / mixup | `1.0` / `0` |
-| Augmentasi gambar | Cutmix / copy-paste / erasing | `0` / `0` / `0.4` |
-| Training | Close mosaic / nominal batch size | `10` epoch terakhir / `64` |
-| Evaluasi | Split / IoU / max detections | `val` / `0.7` / `300` |
-| Quality gate | Target precision dan mAP50 tiap kelas | `98%`; run belum lulus |
+| Perangkat | ESP32-S3 N16R8 | Mengambil JPEG, mengirim frame, membaca ultrasonik dan GPS, mengirim telemetri, mengirim UART alert |
+| Perangkat | Kamera OV3660 | Menghasilkan frame QVGA 320x240 untuk preview dan inferensi |
+| Perangkat | HC-SR04 | Mengukur jarak depan 0,05-3,00 m dengan 5 sampel dan filter median |
+| Perangkat | GPS UART | Mengirim latitude, longitude, altitude, kecepatan, satelit, HDOP, dan status fix |
+| Perangkat | Board TWS ESP32 klasik | Menerima `ALERT 0/1/2` dari ESP32-S3 dan mengelola audio TWS |
+| Edge | Browser | Menampilkan dashboard, memutar klip Ardi, membunyikan buzzer, dan mengirim frame kamera bila dipakai |
+| API | `server_rest_api.py` | Validasi API key/cookie, inferensi, fuzzy, suara, riwayat, SSE, Supabase, dan serving dashboard |
+| Visi | `InferensiVest` | Menjalankan YOLO26n-seg pada `imgsz=512`, `conf=0.35`, `conf_ragu=0.50` |
+| Keputusan | `fuzzysugeno.py` | Fuzzifikasi jarak/bahaya/jalur, 26 aturan Sugeno, level, arah, pelacak gerak, memori lubang |
+| Suara | `PerencanaSuara` | Merakit klip awal, objek, jarak, dan solusi sesuai level dan urgensi |
+| Data | `_simpan_riwayat` | Menulis JSONL lokal, merotasi file, dan menyinkronkan ke Supabase |
+| Web | `useVestData.js` | Membaca `/dashboard/data`, SSE telemetri, SSE deteksi, dan fallback polling |
+| Peta | `GpsMap.jsx` | Menampilkan marker rompi, jejak GPS, dan marker objek di Google Maps |
+| Deploy | Railway | Membangun image Docker, menjalankan Uvicorn, health check `/readyz`, dan volume `/data` |
 
-### Split dataset dan seed
+### Alur data utama
 
-Run terbaru memakai pembagian aktual 90% train dan 10% validasi, bukan 80% train dan 20% validasi. Nilai pembagi berada di `train_semua.py` pada `VAL_FRACTION = 0.10`.
+| Tahap | Aktor | Masukan | Proses | Keluaran | Media |
+|---|---|---|---|---|---|
+| 1. Akuisisi | ESP32-S3 / browser | Cahaya di depan pengguna | Capture JPEG QVGA atau frame kamera browser | Blob/JPEG | Memori perangkat |
+| 2. Kirim frame | ESP32-S3 | JPEG + `X-API-Key` | Multipart ke `POST /deteksi` dengan `sesi=esp32s3-camera` | Request HTTP | HTTPS 443 |
+| 3. Preview | ESP32-S3 | JPEG | Kirim terpisah ke `POST /api/esp32/frame` | Frame terbaru di memori | HTTPS 443 |
+| 4. Validasi | FastAPI | Multipart | Cek API key/cookie, ukuran maksimum 10 MB, resolusi maksimum 40 MP | Gambar RGB | Memori server |
+| 5. Inferensi | YOLO26n-seg | Gambar 512x512 | Deteksi box, mask, confidence untuk 5 kelas | Daftar objek | GPU/CPU server |
+| 6. Keputusan | Fuzzy Sugeno | Box, mask, jarak kamera/ultrasonik | Fuzzifikasi, 26 aturan, defuzzifikasi | Urgensi, level, arah, `alert` | Memori server |
+| 7. Suara | PerencanaSuara | Daftar deteksi | Pilih objek teratas, rakit klip | Rencana segmen + teks | Memori server |
+| 8. Alert fisik | ESP32-S3 | `alert` 0/1/2 | Kirim `ALERT <n>\n` lewat UART 115200 | Sinyal ke board TWS | UART 3,3 V |
+| 9. Riwayat | FastAPI | Hasil deteksi | Tulis JSONL, rotasi 5 MB/4.000 entri | `data/runtime/riwayat.jsonl` | Disk container/volume |
+| 10. Supabase | FastAPI | Hasil deteksi + posisi | PATCH/POST/DELETE, deduplikasi per objek | Baris `detections`, `gps_log` | Supabase REST |
+| 11. Dashboard | React | `/dashboard/data`, SSE | Normalisasi, urutkan risiko, render kartu dan peta | UI realtime | HTTPS same-origin |
+| 12. Telemetri | ESP32-S3 | Jarak, GPS, baterai | POST setiap 1 detik | Status online, peta, jarak | HTTPS 443 |
+
+### Batas sistem dan asumsi arsitektur
+
+- **Satu replica.** Frame terbaru, telemetri terbaru, dan antrean SSE disimpan di memori proses. Menjalankan beberapa replica akan memecah state; `railway.json` karena itu menetapkan `numReplicas: 1`.
+- **Supabase opsional.** Tanpa `SUPABASE_URL` dan `SUPABASE_SERVICE_ROLE_KEY`, API tetap berjalan dengan riwayat lokal. Dashboard memakai fallback data live dan `/riwayat`.
+- **Kamera dan telemetri bisa terpisah.** ESP32-S3 mengirim frame dan telemetri; server menggabungkan keduanya berdasarkan waktu. Jika GPS belum fix, peta tidak memakai posisi lama sebagai pengganti.
+- **Tidak ada motor getar.** Perangkat saat ini memakai audio/TWS dan buzzer browser. Field `getar` pada JSON dipertahankan hanya untuk kompatibilitas klien lama.
+- **Latency Railway berbeda dari GPU training.** Angka 17,21 ms adalah pengukuran GPU GTX 1650 Max-Q saat evaluasi, bukan latency CPU Railway.
+
+## Hardware dan firmware
+
+### Komponen perangkat
+
+| Komponen | Spesifikasi | Fungsi |
+|---|---|---|
+| Mikrokontroler | ESP32-S3 N16R8, 16 MB flash, 8 MB PSRAM | Menjalankan kamera, HTTPS, ultrasonik, GPS, dan UART alert |
+| Kamera | OV3660, DVP, frame QVGA 320x240, JPEG quality 16 | Mengambil gambar untuk preview dan inferensi |
+| Sensor jarak | HC-SR04, 0,05-3,00 m, 5 sampel, minimal 3 valid | Mengukur jarak objek depan |
+| GPS | Modul UART 9600 baud, TinyGPSPlus | Memberi lokasi, kecepatan, satelit, HDOP, dan fix |
+| Alert audio | UART 3,3 V TX GPIO14 -> RX2 GPIO16 board ESP32 klasik | Mengirim `ALERT 0/1/2` ke pengelola TWS |
+| Audio | TWS/speaker yang dipasangkan ke perangkat dashboard atau board TWS | Memutar klip Ardi dan buzzer |
+| Daya | Power bank/regulator 5 V sesuai rompi | Menyalakan ESP32-S3, kamera, sensor, dan GPS |
+| Firmware | `hardware/arduino/esp32_s3/esp32_s3.ino` | Sketch utama ESP32-S3 |
+| Konfigurasi rahasia | `hardware/arduino/esp32_s3/secrets.h` | API key dan override URL server |
+
+Board ESP32 klasik pengelola TWS **tidak disertakan di repo ini**. Kontrak yang didokumentasikan adalah UART satu arah: ESP32-S3 mengirim `ALERT 0\n`, `ALERT 1\n`, atau `ALERT 2\n` pada 115200 baud; board klasik membaca perintah itu dan memilih audio TWS yang sesuai. GND kedua board harus disatukan.
+
+### Pemetaan pin ESP32-S3
+
+| Fungsi | GPIO | Catatan |
+|---|---:|---|
+| Kamera XCLK | 15 | Clock kamera 10 MHz |
+| Kamera SIOD | 4 | SCCB data |
+| Kamera SIOC | 5 | SCCB clock |
+| Kamera D7 | 16 | Data kamera |
+| Kamera D6 | 17 | Data kamera |
+| Kamera D5 | 18 | Data kamera |
+| Kamera D4 | 12 | Data kamera |
+| Kamera D3 | 10 | Data kamera |
+| Kamera D2 | 8 | Data kamera |
+| Kamera D1 | 9 | Data kamera |
+| Kamera D0 | 11 | Data kamera |
+| Kamera VSYNC | 6 | Sinkronisasi vertikal |
+| Kamera HREF | 7 | Sinkronisasi horizontal |
+| Kamera PCLK | 13 | Pixel clock |
+| Flash LED | 2 | LED bantu |
+| Tombol reset | 0 | Reset |
+| Ultrasonik TRIG | 21 | Trigger HC-SR04 |
+| Ultrasonik ECHO | 47 | Echo HC-SR04 |
+| GPS RX | 41 | Menerima TX dari modul GPS |
+| GPS TX | 42 | Mengirim ke RX modul GPS |
+| Alert TX | 14 | Ke RX2 GPIO16 board ESP32 klasik |
+| GND bersama | GND | Wajib untuk UART dan sensor |
+
+Pin kamera mengikuti mapping DVP umum untuk board ESP32-S3 N16R8 yang kompatibel dengan `CAMERA_MODEL_ESP32S3_EYE`. XCLK disetel 10 MHz untuk kestabilan OV3660. Pin kamera tidak boleh dipakai untuk sensor lain.
+
+### Perilaku firmware
+
+| Parameter | Nilai | Arti |
+|---|---:|---|
+| `JEDA_UPLOAD_FRAME_MS` | 125 ms | Target upload frame preview sekitar 8 fps |
+| `JEDA_TELEMETRI` | 1.000 ms | Kirim telemetri setiap 1 detik |
+| `JARAK_MIN_M` | 0,05 m | Batas bawah pembacaan ultrasonik |
+| `JARAK_MAX_M` | 3,00 m | Batas atas pembacaan ultrasonik |
+| `SAMPEL_TOTAL` | 5 | Jumlah sampel HC-SR04 per pembacaan |
+| `SAMPEL_VALID_MIN` | 3 | Minimal sampel valid |
+| `TOLERANSI_SEBARAN_M` | 0,03 m | Toleransi sekitar median |
+| `KUALITAS_JPEG` | 16 | Kualitas JPEG QVGA |
+| `FRAMESIZE_QVGA` | 320x240 | Resolusi frame |
+| `N_WORKER_DETEKSI` | 1 | Satu worker inferensi agar heap TLS aman |
+| `GPS_BAUD` | 9.600 | Baud modul GPS |
+| `GPS_FIX_MAX_AGE_MS` | 5.000 ms | Fix dianggap kedaluwarsa setelah 5 detik |
+| `ALERT_BAUD` | 115.200 | Baud UART alert |
+| `VEST_USE_LAN_DISCOVERY` | 0 | Default firmware untuk Railway; 1 untuk LAN lokal |
+| `DEFAULT_RAILWAY_URL` | `https://vestcare-detection-object-production.up.railway.app` | URL default firmware |
+
+Alur firmware:
+
+1. `setup()` menyiapkan kamera, GPS, ultrasonik, UART alert, dan WiFiManager.
+2. Perangkat membuat access point `VestCare-ESP32S3` dengan sandi `12345678` bila Wi-Fi belum dikonfigurasi.
+3. Pengguna menghubungkan ponsel ke access point, lalu mengisi SSID dan sandi Wi-Fi melalui portal. API key dan URL server **tidak** dimasukkan melalui portal.
+4. `cameraTask` mengambil frame JPEG dan mengirimkannya ke `POST /api/esp32/frame` untuk preview.
+5. Worker deteksi mengirim frame ke `POST /deteksi` dengan `sesi=esp32s3-camera` dan `mode_realtime=true`.
+6. `telemetryTask` membaca HC-SR04 dan GPS, lalu mengirim JSON ke `POST /api/telemetri` setiap 1 detik.
+7. Respons `/deteksi` dibaca untuk mengambil nilai `alert`; firmware memanggil `kirimAlert(level)`.
+8. `kirimAlert` hanya mengirim ulang bila level berubah atau sudah 1 detik sejak kiriman terakhir.
+9. Jika URL server tetap (Railway), firmware tidak memerlukan discovery. Jika memakai LAN, discovery UDP 4211 dipakai untuk menemukan server lokal.
+10. Jika request gagal, firmware mencoba lagi tanpa memblokir task telemetri.
+
+### Audio, TWS, dan buzzer
+
+| Level | Skor urgensi | Nilai `alert` | UART | Suara Ardi | Buzzer |
+|---|---|---:|---|---|---|
+| `AMAN` | 0-24,99 | 0 | `ALERT 0` | Klip `jalur_aman` bila tidak ada objek | Mati |
+| `INFO` | 25-49,99 | 0 | `ALERT 0` | Klip objek, jarak, dan solusi; tanpa klip awal | Mati |
+| `WASPADA` | 50-74,99 | 1 | `ALERT 1` | Klip `awal_waspada` + objek + jarak + solusi | Mati, kecuali objek depan < 0,50 m |
+| `BAHAYA` | 75-100 | 2 | `ALERT 2` | Klip `awal_bahaya` + objek + jarak + solusi | Aktif bila objek depan < 0,50 m |
+
+Ketentuan tambahan:
+
+- `alert` menjadi **2** bila ada objek yakin di depan pada jarak kurang dari **0,50 m**, walaupun level fuzzy bukan `BAHAYA`.
+- Buzzer dashboard berbunyi terus selama objek depan dekat masih terdeteksi dan berhenti otomatis setelah **1,5 detik** tanpa pembaruan deteksi.
+- Browser dapat memblokir audio otomatis. Dashboard mencoba membuka audio dan melanjutkan saat pengguna melakukan interaksi pertama (klik atau tombol).
+- TWS dapat dipakai bila dipasangkan ke ponsel/komputer yang membuka dashboard dan dipilih sebagai output audio. ESP32-S3 tidak mengirim audio langsung ke TWS; ia hanya mengirim sinyal alert ke board pengelola TWS.
+- Klip suara berada di `data/runtime/audio/cache_ardi` dengan manifest skema 3, penutur `id-ID-ArdiNeural`, format MP3.
+- Jika folder klip tidak tersedia, inferensi dan kamera tetap berjalan, tetapi audio dashboard dinonaktifkan dengan pesan yang jelas.
+
+### Tentang `getar`
+
+`fuzzysugeno.py` masih mengembalikan field `getar` pada JSON untuk kompatibilitas klien lama. **Perangkat keras saat ini tidak memakai motor getar.** Peringatan fisik yang tersedia adalah audio/TWS dan buzzer. Pada tabel evaluasi, nama varian `getar` berarti **gambar uji yang digoyangkan** (camera shake), bukan motor getar perangkat. Jangan menambahkan klaim getar ke deskripsi hardware.
+
+### Wi-Fi, URL server, dan discovery
+
+| Mode | URL server | Discovery | Catatan |
+|---|---|---|---|
+| Railway produksi | `https://vestcare-detection-object-production.up.railway.app` | Nonaktif | URL tetap; firmware memakai `DEFAULT_RAILWAY_URL` |
+| Railway domain lain | URL dari `railway domain` | Nonaktif | Isi `VEST_SERVER_URL` di `secrets.h`, flash ulang |
+| LAN lokal | `http://<ip-server>:8080` | UDP 4211 | Set `VEST_USE_LAN_DISCOVERY=1`; server dan ESP32 harus satu LAN |
+| Tanpa URL | Kosong | UDP 4211 | Firmware mencari server lokal; respons discovery ditandatangani API key |
+
+Firmware memverifikasi HTTPS memakai CA bundle ESP32 dan menyinkronkan waktu lewat NTP. Jangan menonaktifkan verifikasi TLS. Untuk Railway, port tujuan adalah TCP 443; untuk server lokal, port TCP `VEST_PORT` (default 8080).
+
+## Model dan training
+
+### Identitas run final
+
+| Informasi | Nilai |
+|---|---|
+| Run | `semua_kelas_yolo26n_20261107_154452` |
+| Lokasi artefak di repo | `data/results/run_final/` |
+| Model dasar | `yolo26n-seg.pt` |
+| Tugas | Object detection dan instance segmentation |
+| Kelas keluaran | 5 |
+| Epoch | 100 dari 100 |
+| Waktu training | 29.825,4 detik atau 8,285 jam (8 jam 17 menit) |
+| Checkpoint terbaik | `weights/best.pt` pada run asli (berkas lokal) |
+| Bobot aktif | `models/best.pt` |
+| Evaluasi | Split validasi `val`, 312 gambar |
+| Split test independen | Tidak tercatat |
+
+Run asli disimpan di path absolut `C:\dataset vestcare (rompi-cerdas)\runs\segment\runs\semua_kelas_yolo26n_20261107_154452`. Artefak yang dipublikasikan ke GitHub disalin ke `data/results/run_final/` agar path-nya portabel. File JSON di folder itu masih memuat path absolut dari mesin training; gunakan path `data/results/run_final/` saat membaca dari repo.
+
+### Dataset dan split
+
+| Split | Jumlah gambar | Background tanpa objek berlabel | Keterangan |
+|---|---:|---:|---|
+| Train | 2.778 | 101 | Pembaruan bobot |
+| Validasi | 312 | 12 | Pemantauan dan evaluasi |
+| Total | 3.090 | 113 | Tidak ada overlap gambar train-validasi |
+| Test independen | Tidak tercatat | - | Evaluasi hanya pada `val` |
 
 | Parameter split | Nilai |
 |---|---|
 | `VAL_FRACTION` | 0,10 |
 | Proporsi train | 90% |
 | Proporsi validasi | 10% |
-| Jumlah gambar train | 2.778 |
-| Jumlah gambar validasi | 312 |
-| Total gambar | 3.090 |
 | Persentase train aktual | 89,90% |
 | Persentase validasi aktual | 10,10% |
-| Seed pengacakan split | 0, memakai `random.Random(0)` |
-| Seed training | 0, memakai `SEED_LATIH = 0` |
+| Seed split | 0, memakai `random.Random(0)` |
+| Seed training | 0, `SEED_LATIH = 0` |
 | Deterministic | `True` |
 | Cache dataset | `False` |
-| AMP | `True` |
+| AMP | Diminta aktif, tetapi dinonaktifkan otomatis karena pemeriksaan kompatibilitas GPU |
 | Manifest train | `data/results/runs/dataset_splits/train.txt` |
 | Manifest validasi | `data/results/runs/dataset_splits/val.txt` |
 
@@ -103,9 +315,91 @@ Cara split bekerja:
 5. Pipeline memastikan kelima kelas tetap muncul di train dan validasi.
 6. Hasil split ditulis ke `train.txt` dan `val.txt`, lalu dibaca oleh `dataset_gabungan.yaml`.
 
-Jika ingin memakai 80% train dan 20% validasi, ubah `VAL_FRACTION = 0.20` di `train_semua.py`, lalu jalankan training ulang. Metrik pada README ini tetap berlaku untuk split 90/10 dan tidak dapat dibandingkan langsung dengan hasil split 80/20.
+Jumlah gambar validasi per kelas dapat saling tumpang tindih karena satu gambar dapat memuat lebih dari satu kelas.
 
-### Tabel indikator utama
+| Kelas | Gambar validasi | Instance |
+|---|---:|---:|
+| pohon | 76 | 76 |
+| mobil | 87 | 269 |
+| motor | 61 | 358 |
+| orang | 93 | 281 |
+| lubang | 60 | 88 |
+| Total | 377 | 1.072 |
+
+Catatan dataset saat ini:
+
+- `dataset_gabungan.yaml` di root saat ini menunjuk split `semua_kelas_yolo26n_20261118_083150` dan mencantumkan enam nama, termasuk `__non_target_internal__`.
+- Model yang dievaluasi di README ini tetap mengeluarkan **lima kelas target**. Kelas internal dipakai untuk memetakan label penunjang (misalnya helm) agar tidak tampil sebagai kelas utama.
+- Angka 2.778/312 di atas adalah split run final 20261107, bukan split terbaru. Jangan mencampur metrik run final dengan split konfigurasi saat ini.
+- Jika ingin memakai 80% train dan 20% validasi, ubah `VAL_FRACTION = 0.20` di `train_semua.py`, lalu training ulang. Metrik lama tidak dapat dibandingkan langsung.
+
+### Konfigurasi training
+
+| Kelompok | Parameter | Nilai |
+|---|---|---|
+| Input | Ukuran gambar | 512 x 512 |
+| Input | Batch | 4 |
+| Input | DataLoader workers | 0 |
+| Proses | Device | CUDA:0, NVIDIA GeForce GTX 1650 with Max-Q Design, 4.096 MiB |
+| Proses | Seed training / deterministic | 0 / aktif |
+| Proses | Cache | Nonaktif |
+| Proses | AMP | Diminta aktif, dinonaktifkan otomatis |
+| Proses | Epoch maksimum / patience | 100 / 50 |
+| Model | Bobot awal | `yolo26n-seg.pt` pretrained |
+| Optimizer | Jenis | AdamW |
+| Optimizer | Learning rate awal (`lr0`) | 0,001 |
+| Optimizer | Learning rate akhir (`lrf`) | 0,01 |
+| Optimizer | Momentum | 0,937 |
+| Optimizer | Weight decay | 0,0005 |
+| Augmentasi | Mosaic / flip kiri-kanan | 1,0 / 0,5 |
+| Augmentasi | Rotasi / translasi / skala | 10 derajat / 0,1 / 0,5 |
+| Augmentasi | MixUp / Copy-Paste | 0 / 0 |
+| Augmentasi | Erasing | 0,4 |
+| Loss | Box / cls / DFL | 7,5 / 0,5 / 1,5 |
+| Training | Close mosaic | 10 epoch terakhir |
+| Training | Nominal batch size | 64 |
+| Evaluasi | Split / IoU / max detections | `val` / 0,7 / 300 |
+| Quality gate | Ambang per kelas | 98% untuk `box_p`, `box_map50`, `mask_p`, `mask_map50` |
+
+### Software training
+
+| Komponen | Versi / perangkat |
+|---|---|
+| Python | 3.12.10 |
+| PyTorch | 2.14.1+cu130 |
+| Ultralytics training | 8.4.195 |
+| Ultralytics serving | 8.4.218 pada `requirements.txt` |
+| CUDA | Device 0 |
+| GPU | NVIDIA GeForce GTX 1650 with Max-Q Design, VRAM 4.096 MiB |
+
+### Arsitektur model
+
+| Bagian | Blok / tahap | Fungsi |
+|---|---|---|
+| Input | Gambar RGB 512 x 512 x 3 | Masukan model |
+| Backbone awal | Conv dan C3k2, P1/2 hingga P3/8 | Ekstraksi fitur dasar dan detail objek |
+| Backbone tengah | Conv dan C3k2 pada P4/16 | Ekstraksi fitur objek ukuran menengah |
+| Backbone akhir | Conv dan C3k2 pada P5/32 | Ekstraksi konteks objek yang lebih besar |
+| Konteks | SPPF | Menggabungkan konteks spasial pada beberapa receptive field |
+| Atensi | C2PSA | Memperkuat fitur spasial yang relevan |
+| Neck | Upsample, concat, C3k2, dan downsample | Fusi fitur multiskala P3, P4, dan P5 |
+| Head | Segment26 | Prediksi kelas, bounding box, dan mask segmentasi |
+| Proto | Proto26 | Menghasilkan prototipe mask |
+
+| Ringkasan model | Nilai |
+|---|---:|
+| Bobot aktif `models/best.pt` | 310 layer |
+| Parameter bobot aktif | 3.084.955 |
+| GFLOPs bobot aktif pada 512 | 10,4 |
+| Ringkasan awal training di log | 309 layer, 3.054.875 parameter, 10,3 GFLOPs |
+| Model fused untuk inferensi | 137 layer, 2.704.755 parameter, 9,1 GFLOPs |
+| Bobot pretrained yang dipindahkan | 830 dari 844 |
+
+## Hasil evaluasi
+
+Evaluasi detail dilakukan pada 312 gambar validasi memakai `best.pt`. Nilai mAP adalah metrik deteksi/segmentasi, bukan akurasi klasifikasi biasa. Sumber utama: `data/results/run_final/evaluation/final/ringkasan_test.json` dan `laporan_akurasi.txt`.
+
+### Indikator utama
 
 | Indikator | Nilai | Keterangan |
 |---|---:|---|
@@ -129,25 +423,7 @@ Jika ingin memakai 80% train dan 20% validasi, ubah `VAL_FRACTION = 0.20` di `tr
 | Status quality gate | Belum lulus | Ambang 98% per kelas belum terpenuhi |
 | Bobot aktif | Tidak diganti otomatis | `models/best.pt` dipertahankan |
 
-### Nilai mentah metrik validasi
-
-Nilai berikut diambil tanpa pembulatan dari `reports/training_report.json` bagian `validation.val.overall`.
-
-| Metrik | Nilai mentah |
-|---|---:|
-| `metrics/precision(B)` | 0,8850734184435352 |
-| `metrics/recall(B)` | 0,7805736969039915 |
-| `metrics/mAP50(B)` | 0,8539829367863725 |
-| `metrics/mAP50-95(B)` | 0,6476855973686102 |
-| `metrics/precision(M)` | 0,8902456090770972 |
-| `metrics/recall(M)` | 0,7821941168477433 |
-| `metrics/mAP50(M)` | 0,8492560575568179 |
-| `metrics/mAP50-95(M)` | 0,6105370743416991 |
-| `fitness` | 1,2582226717103093 |
-
 ### Nilai mentah evaluasi akhir
-
-Nilai berikut diambil tanpa pembulatan dari `evaluation/final/ringkasan_test.json` bagian `total`.
 
 | Metrik | Nilai mentah |
 |---|---:|
@@ -162,14 +438,36 @@ Nilai berikut diambil tanpa pembulatan dari `evaluation/final/ringkasan_test.jso
 | `mask_map50` | 0,8475512387723771 |
 | `mask_map5095` | 0,6117560521272606 |
 
-### Nilai mentah akurasi tingkat gambar
+### Metrik per kelas
 
-| Indikator | Nilai mentah |
+| Kelas | Gambar | Instance | Box P | Box R | Box F1 | Box mAP50 | Box mAP50-95 | Mask P | Mask R | Mask F1 | Mask mAP50 | Mask mAP50-95 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| pohon | 76 | 76 | 0,9846 | 1,0000 | 0,9923 | 0,9950 | 0,9044 | 0,9852 | 1,0000 | 0,9926 | 0,9950 | 0,8780 |
+| mobil | 87 | 269 | 0,8977 | 0,7505 | 0,8175 | 0,8456 | 0,5857 | 0,9153 | 0,7637 | 0,8327 | 0,8449 | 0,5416 |
+| motor | 61 | 358 | 0,9129 | 0,7907 | 0,8474 | 0,8882 | 0,6385 | 0,9482 | 0,8179 | 0,8782 | 0,9182 | 0,5801 |
+| orang | 93 | 281 | 0,8583 | 0,7367 | 0,7928 | 0,8081 | 0,5864 | 0,8274 | 0,7046 | 0,7611 | 0,7628 | 0,5309 |
+| lubang | 60 | 88 | 0,7718 | 0,6250 | 0,6907 | 0,7336 | 0,5236 | 0,7777 | 0,6250 | 0,6930 | 0,7169 | 0,5283 |
+
+### Metrik per varian validasi
+
+| Varian | Gambar | Box P | Box R | Box mAP50 | Box mAP50-95 | Mask P | Mask R | Mask mAP50 | Mask mAP50-95 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| gerak_diagonal | 78 | 0,8967 | 0,7746 | 0,8481 | 0,6320 | 0,9092 | 0,7850 | 0,8558 | 0,6132 |
+| gerak_horizontal | 81 | 0,9046 | 0,7707 | 0,8566 | 0,6514 | 0,8943 | 0,7642 | 0,8465 | 0,6097 |
+| gerak_vertikal | 76 | 0,8787 | 0,7911 | 0,8536 | 0,6532 | 0,9084 | 0,7863 | 0,8435 | 0,6109 |
+| getar | 77 | 0,9074 | 0,7463 | 0,8616 | 0,6625 | 0,9172 | 0,7413 | 0,8468 | 0,6233 |
+
+`getar` di sini adalah nama varian gambar uji yang digoyangkan, bukan motor getar perangkat.
+
+### Akurasi tingkat gambar
+
+| Indikator | Nilai |
 |---|---:|
 | Jumlah gambar evaluasi | 312 |
+| Gambar benar | 251 |
 | Gambar salah | 61 |
 | `akurasi_tingkat_gambar` | 0,8045 |
-| `presisi_mikro_gambar` | 0,922 |
+| `presisi_mikro_gambar` | 0,9220 |
 | `recall_mikro_gambar` | 0,9098 |
 | `f1_mikro_gambar` | 0,9159 |
 | `f1_makro_gambar` | 0,9143 |
@@ -184,54 +482,7 @@ Jumlah gambar salah per varian:
 | getar | 15 |
 | Total | 61 |
 
-### Nilai mentah per kelas
-
-| Kelas | Box P | Box R | Box mAP50 | Box mAP50-95 | Mask P | Mask R | Mask mAP50 | Mask mAP50-95 |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| pohon | 0,9846308092896334 | 1,0 | 0,995 | 0,9044289681099335 | 0,9852311366998912 | 1,0 | 0,995 | 0,8779504155763667 |
-| mobil | 0,8977227397813299 | 0,7504810223014423 | 0,8456219367043477 | 0,5856976576013708 | 0,9153411133010018 | 0,7636846234338663 | 0,8448957447049819 | 0,5415880875912391 |
-| motor | 0,9129262729881418 | 0,7907326690240791 | 0,8882323616367929 | 0,6385073092584529 | 0,9481858585069705 | 0,8178674102348811 | 0,9181640452954154 | 0,5801310784415681 |
-| orang | 0,8582778957590607 | 0,7366548042704626 | 0,8081254651312417 | 0,5864025487005654 | 0,8273520603209127 | 0,7046263345195729 | 0,762822789011519 | 0,5308559823536135 |
-| lubang | 0,7718100560598334 | 0,625 | 0,7336184048899628 | 0,5235586481373415 | 0,7777103420439897 | 0,625 | 0,7168736148499693 | 0,5282546966735155 |
-
-### Data mentah dataset
-
-| Item | Nilai |
-|---|---:|
-| Gambar train | 2.778 |
-| Background train | 101 |
-| File train rusak | 0 |
-| Gambar validasi | 312 |
-| Background validasi | 12 |
-| File validasi rusak | 0 |
-| Overlap gambar train dan validasi | 0 |
-| Total instance validasi | 1.072 |
-| Jumlah kelas | 5 |
-
-Jumlah gambar dan instance validasi per kelas:
-
-| Kelas | Gambar | Instance |
-|---|---:|---:|
-| pohon | 76 | 76 |
-| mobil | 87 | 269 |
-| motor | 61 | 358 |
-| orang | 93 | 281 |
-| lubang | 60 | 88 |
-| Total | 377 | 1.072 |
-
-Catatan: total gambar per kelas adalah jumlah kehadiran kelas pada gambar validasi, sehingga nilainya lebih besar dari 312 karena satu gambar dapat memuat beberapa kelas.
-
-### Akurasi per kelas
-
-| Kelas | Gambar | Instance | Box P | Box R | Box F1 | Box mAP50 | Box mAP50-95 | Mask P | Mask R | Mask F1 | Mask mAP50 | Mask mAP50-95 |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| pohon | 76 | 76 | 0,9846 | 1,0000 | 0,9923 | 0,9950 | 0,9044 | 0,9852 | 1,0000 | 0,9926 | 0,9950 | 0,8780 |
-| mobil | 87 | 269 | 0,8977 | 0,7505 | 0,8175 | 0,8456 | 0,5857 | 0,9153 | 0,7637 | 0,8327 | 0,8449 | 0,5416 |
-| motor | 61 | 358 | 0,9129 | 0,7907 | 0,8474 | 0,8882 | 0,6385 | 0,9482 | 0,8179 | 0,8782 | 0,9182 | 0,5801 |
-| orang | 93 | 281 | 0,8583 | 0,7367 | 0,7928 | 0,8081 | 0,5864 | 0,8274 | 0,7046 | 0,7611 | 0,7628 | 0,5309 |
-| lubang | 60 | 88 | 0,7718 | 0,6250 | 0,6907 | 0,7336 | 0,5236 | 0,7777 | 0,6250 | 0,6930 | 0,7169 | 0,5283 |
-
-### Akurasi tingkat gambar per kelas
+Akurasi tingkat gambar per kelas:
 
 | Kelas | TP | FP | FN | TN | Akurasi | Presisi | Recall | F1 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -241,18 +492,7 @@ Catatan: total gambar per kelas adalah jumlah kehadiran kelas pada gambar valida
 | orang | 71 | 0 | 22 | 219 | 0,9295 | 1,0000 | 0,7634 | 0,8659 |
 | lubang | 52 | 15 | 8 | 237 | 0,9263 | 0,7761 | 0,8667 | 0,8189 |
 
-### Akurasi per varian dataset validasi
-
-| Varian | Gambar | Box P | Box R | Box mAP50 | Box mAP50-95 | Mask P | Mask R | Mask mAP50 | Mask mAP50-95 |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| gerak_diagonal | 78 | 0,8967 | 0,7746 | 0,8481 | 0,6320 | 0,9092 | 0,7850 | 0,8558 | 0,6132 |
-| gerak_horizontal | 81 | 0,9046 | 0,7707 | 0,8566 | 0,6514 | 0,8943 | 0,7642 | 0,8465 | 0,6097 |
-| gerak_vertikal | 76 | 0,8787 | 0,7911 | 0,8536 | 0,6532 | 0,9084 | 0,7863 | 0,8435 | 0,6109 |
-| getar | 77 | 0,9074 | 0,7463 | 0,8616 | 0,6625 | 0,9172 | 0,7413 | 0,8468 | 0,6233 |
-
-### Log saat training
-
-Tabel berikut diambil dari `results.csv` dan log konsol training. Nilai loss adalah rata-rata epoch, sedangkan P, R, dan mAP adalah metrik validasi pada epoch tersebut.
+### Log training per epoch
 
 | Epoch | Waktu kumulatif (detik) | Train box loss | Train seg loss | Train cls loss | Box P | Box R | Box mAP50 | Box mAP50-95 | Mask mAP50 | Mask mAP50-95 | Val box loss | Val seg loss |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -269,11 +509,11 @@ Ringkasan log konsol:
 |---|---|
 | Pemindaian dataset train | 2.778 gambar, 101 background, 0 corrupt |
 | Pemindaian dataset validasi | 312 gambar, 12 background, 0 corrupt |
-| Mulai training | 100 epoch, optimizer AdamW, AMP aktif, deterministic |
+| Mulai training | 100 epoch, optimizer AdamW, AMP diminta lalu dinonaktifkan, deterministic |
 | Akhir training | 100 dari 100 epoch selesai, tidak ada early stopping |
-| Model akhir | 2.704.755 parameter, 9,1 GFLOPs |
+| Model awal | 309 layer, 3.054.875 parameter, 10,3 GFLOPs |
 | Evaluasi akhir | 312 gambar validasi, 5 kelas |
-| Waktu inferensi validasi | 0,5 ms praproses, 11,9 ms inferensi, 1,6 ms pascaproses per gambar |
+| Waktu inferensi validasi | 0,5 ms praproses, 13,4 ms inferensi, 1,9 ms pascaproses per gambar |
 | Pengukuran kecepatan | 17,21 ms/gambar, median 17,31 ms, maksimum 29,01 ms, sekitar 58,1 FPS |
 
 ### Status quality gate
@@ -288,40 +528,57 @@ Quality gate memakai ambang 98% untuk `box_p`, `box_map50`, `mask_p`, dan `mask_
 | orang | 0,8583 | 0,8081 | 0,8274 | 0,7628 | Belum lulus |
 | lubang | 0,7718 | 0,7336 | 0,7777 | 0,7169 | Belum lulus |
 
-Hasil quality gate adalah `passed: false` dan `deployed: false`. Pipeline tidak mengganti bobot aktif secara otomatis. Checkpoint terbaik tetap disalin manual ke `models/best.pt` untuk kebutuhan serving.
-
-Laporan lengkap tersedia di:
+Hasil quality gate adalah `passed: false` dan `deployed: false`. Artinya pipeline tidak mengganti bobot aktif secara otomatis. `models/best.pt` tetap dipakai untuk serving setelah dipilih/ditempatkan secara manual. Laporan lengkap:
 
 ```text
-data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/training_report.txt
-data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/training_report.json
-data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/val_class_metrics.csv
-data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/
+data/results/run_final/reports/training_report.json
+data/results/run_final/evaluation/final/ringkasan_test.json
+data/results/run_final/evaluation/final/laporan_akurasi.txt
+data/results/run_final/results.csv
 ```
 
-## Alur kerja fuzzy logic
+### Grafik evaluasi
 
-Fuzzy logic mengubah hasil segmentasi menjadi skor urgensi 0 sampai 100. Implementasi berada di `fuzzysugeno.py`.
+![Ringkasan metrik validasi total](data/results/run_final/evaluation/final/grafik/1_ringkasan_total.png)
+
+![Metrik validasi per kelas](data/results/run_final/evaluation/final/grafik/2_per_kelas.png)
+
+![Akurasi tingkat gambar per kelas](data/results/run_final/evaluation/final/grafik/4_tingkat_gambar.png)
+
+![Kurva loss dan metrik training](data/results/run_final/results.png)
+
+### Interpretasi hasil
+
+- Kinerja terbaik ada pada kelas **pohon** (box mAP50 99,50%; mask mAP50 99,50%) dan **motor** (box 88,82%; mask 91,82%).
+- Kelas **lubang** adalah yang terlemah (box mAP50 73,36%; mask mAP50 71,69%), diikuti **orang** (box 80,81%; mask 76,28%).
+- Recall lebih rendah daripada precision pada hampir semua kelas. Artinya model cenderung konservatif: objek yang dideteksi cukup tepat, tetapi sebagian objek terlewat.
+- Akurasi tingkat gambar 80,45% berarti 61 dari 312 gambar masih salah pada ambang confidence 0,25.
+- Varian `gerak_horizontal` menyumbang kesalahan gambar terbanyak (20), sedangkan `getar` dan `gerak_diagonal` masing-masing 15.
+- Kecepatan 17,21 ms/gambar adalah hasil GPU saat evaluasi. Railway memakai PyTorch CPU, sehingga latency produksi lebih tinggi dan perlu diukur ulang di service yang dipakai.
+
+## Logika fuzzy Sugeno
+
+Fuzzy logic mengubah hasil segmentasi menjadi skor urgensi 0-100. Implementasi berada di `fuzzysugeno.py`.
 
 ### Tahapan
 
 1. Gambar diterima server, lalu dijalankan melalui YOLO26n-seg pada `imgsz=512`.
 2. Setiap objek menghasilkan kelas, confidence, bounding box, dan mask.
-3. Objek dengan confidence di bawah `VEST_CONF` dibuang. Ambang kandidat lubang adalah 0,35.
-4. Objek dengan confidence di bawah `VEST_CONF_RAGU` tetap dikirim di JSON, tetapi ditandai `ragu: true`.
-5. Objek `ragu` ditampilkan di tampilan kamera sebagai kotak kandidat, tetapi tidak dipakai untuk ringkasan, peringatan, memori, atau penyimpanan Supabase.
-6. Jarak objek diestimasi dari geometri kamera (tinggi 1,00 m dan kemiringan 10 derajat). Jika ada sensor ultrasonik di depan, jarak kamera dan ultrasonik difusikan dengan nilai minimum hingga 3,00 m.
-7. Arah objek ditentukan dari posisi tengah bounding box: kiri, depan, atau kanan.
+3. Objek dengan confidence di bawah `VEST_CONF` (default 0,35) dibuang. Ambang kandidat lubang juga 0,35.
+4. Objek dengan confidence di bawah `VEST_CONF_RAGU` (default 0,50) tetap dikirim di JSON, tetapi ditandai `ragu: true`.
+5. Objek `ragu` ditampilkan sebagai kotak kandidat, tetapi tidak dipakai untuk ringkasan, peringatan, memori, atau penyimpanan Supabase.
+6. Jarak objek diestimasi dari geometri kamera (tinggi kamera 1,00 m, tilt 10 derajat, maksimum 5,00 m). Jika ada sensor ultrasonik di depan, jarak kamera dan ultrasonik difusikan dengan nilai minimum.
+7. Arah objek ditentukan dari posisi tengah bounding box: kiri (<0,4), depan (0,4-0,6), atau kanan (>0,6).
 8. Tingkat bahaya kelas ditetapkan: lubang, motor, dan mobil bernilai 10; orang dan pohon bernilai 6.
 9. Tingkat keterhalangan jalur dihitung dari irisan mask objek dengan koridor jalan di depan pengguna.
 10. Tiga variabel fuzzy dihitung: jarak, bahaya, dan jalur.
 11. Sebanyak 26 aturan Sugeno dievaluasi dengan operator minimum.
-12. Jika objek yakin berada di depan pada jarak kurang dari 0,50 m, buzzer browser berbunyi terus sampai objek tidak lagi terdeteksi dekat. Buzzer berhenti otomatis jika hasil deteksi tidak diperbarui selama 1,5 detik.
 12. Defuzzifikasi memakai rata-rata berbobot nilai singleton untuk menghasilkan skor urgensi.
-13. Skor urgensi dipetakan menjadi level AMAN, INFO, WASPADA, atau BAHAYA.
-14. Level menentukan pola getar dan rencana suara.
+13. Skor urgensi dipetakan menjadi level `AMAN`, `INFO`, `WASPADA`, atau `BAHAYA`.
+14. Level menentukan rencana suara dan sinyal `alert` 0/1/2.
 15. `PelacakGerak` menaksir status bergerak, diam, atau netral untuk mobil, motor, dan orang.
 16. `IngatanHalangan` menyimpan objek lubang yang sempat terlihat agar tetap diperingatkan beberapa saat setelah keluar dari frame.
+17. Jika objek yakin berada di depan pada jarak kurang dari 0,50 m, `alert` dipaksa menjadi 2 dan buzzer dashboard berbunyi.
 
 ### Variabel dan fungsi keanggotaan
 
@@ -357,61 +614,96 @@ Fuzzy logic mengubah hasil segmentasi menjadi skor urgensi 0 sampai 100. Impleme
 | Objek sangat dekat di luar jalur | 3 | 40, 25, dan 10 |
 | Objek dekat, sedang, atau jauh di luar jalur | 3 | 5 |
 
-### Pemetaan level dan getar
+### Pemetaan level, suara, dan alert
 
-| Skor urgensi | Level | Getar |
-|---:|---|---|
-| 75 sampai 100 | BAHAYA | PWM 255, interval 150 ms, getar cepat terus-menerus |
-| 50 sampai kurang dari 75 | WASPADA | PWM 120, interval 600 ms, getar berdenyut pelan |
-| 25 sampai kurang dari 50 | INFO | PWM 80, interval 1.000 ms, denyut tunggal lemah |
-| 0 sampai kurang dari 25 | AMAN | PWM 0, getar mati |
+| Skor urgensi | Level | Nilai `alert` | Suara | Buzzer |
+|---:|---|---:|---|---|
+| 75-100 | `BAHAYA` | 2 | Klip awal bahaya + objek + jarak + solusi | Aktif bila objek depan < 0,50 m |
+| 50-74,99 | `WASPADA` | 1 | Klip awal waspada + objek + jarak + solusi | Aktif bila objek depan < 0,50 m |
+| 25-49,99 | `INFO` | 0 | Klip objek + jarak + solusi | Mati |
+| 0-24,99 | `AMAN` | 0 | Klip jalur aman bila tidak ada objek | Mati |
 
 ### Pelacak gerak dan memori
 
 | Modul | Perilaku |
 |---|---|
-| `PelacakGerak` | Membandingkan perubahan jarak antar-frame untuk mobil, motor, dan orang |
-| Ambang bergerak | Kecepatan mendekat minimal 1,8 m/detik |
-| Ambang diam | Perubahan jarak maksimal 0,4 m/detik |
-| Sampel minimal | 3 sampel berturut-turut |
+| `PelacakGerak` | Membandingkan perubahan jarak dan posisi antar-frame untuk mobil, motor, dan orang |
+| Ambang bergerak | Kecepatan mendekat minimal 1,8 m/detik atau kecepatan posisi minimal 0,05/detik |
+| Ambang diam | Perubahan jarak maksimal 0,4 m/detik dan kecepatan posisi maksimal 0,025/detik |
+| Sampel minimal | 2 sampel berturut-turut untuk bergerak; 4 sampel untuk diam |
 | Umur sampel | 1,5 detik |
 | `IngatanHalangan` | Menyimpan lubang yang sempat terlihat, umur maksimal 2,5 detik |
 | Kecepatan jalan acuan | 1,2 m/detik |
+| Jarak picu memori | `KAMERA_MIN_M + 1,0` meter |
 
 ### Perencana suara
 
 Perencana suara memilih objek dengan level dan urgensi tertinggi. Kalimat dirakit dari klip berikut:
 
-1. Klip awal `awal_waspada` atau `awal_bahaya` bila level minimal WASPADA.
+1. Klip awal `awal_waspada` atau `awal_bahaya` bila level minimal `WASPADA`.
 2. Klip `benda_{kelas}_{arah}_{gerak}`.
 3. Klip jarak `jarak_{bucket}` dengan bucket 5 sampai 50 meter.
 4. Klip solusi `solusi_{aksi}`, misalnya lurus, pelan, pelan kiri, berhenti, atau berhenti kanan.
 
-Jika klip gerak belum tersedia, sistem memakai fallback `benda_{kelas}_{arah}_netral`. Jika tidak ada deteksi, sistem memakai klip `jalur_aman`.
+Jika klip gerak belum tersedia, sistem memakai fallback `benda_{kelas}_{arah}_netral`. Jika tidak ada deteksi, sistem memakai klip `jalur_aman`. Level `INFO` tetap mendapat klip objek/jarak/solusi, tetapi tanpa klip awal waspada/bahaya.
 
-## Alur API, web, dan Supabase
+### Contoh respons deteksi
+
+```json
+{
+  "waktu": "2026-11-27 10:15:00",
+  "jumlah_objek": 1,
+  "jumlah_objek_yakin": 1,
+  "jumlah_ragu": 0,
+  "level_tertinggi": "BAHAYA",
+  "urgensi_tertinggi": 90.0,
+  "alert": 2,
+  "aksi_suara": "berhenti",
+  "suara_diputar": false,
+  "deteksi": [
+    {
+      "kelas": "motor",
+      "jarak_m": 1.2,
+      "bahaya": 10,
+      "jalur": 0.8,
+      "conf": 0.87,
+      "urgensi": 90.0,
+      "level": "BAHAYA",
+      "arah": "depan",
+      "sumber": "kamera+ultrasonik",
+      "gerak": "bergerak",
+      "ragu": false,
+      "pesan": "BAHAYA: motor depan, sekitar 1.2 meter"
+    }
+  ]
+}
+```
+
+Field `getar` pada respons asli masih ada untuk kompatibilitas, tetapi tidak dipakai hardware saat ini.
+
+## API, dashboard, dan Supabase
 
 ### Alur dari kamera sampai dashboard
 
 1. Browser membuka `/` atau `/app`. FastAPI menyajikan build React dari `web/react/dist/`.
-2. Jika `VEST_API_KEY` aktif, server memasang cookie sesi HttpOnly bernama `vestcare_sesi`.
-3. Komponen `CameraCapture` membuka kamera dan mengirim frame ke `POST /deteksi` sekitar satu kali per detik. Pratinjau mempertahankan seluruh bidang gambar (tanpa crop/zoom), dan model membatasi deteksi ke lima kelas target: pohon, mobil, motor, orang, dan lubang.
-4. Firmware ESP32-S3 N16R8 dengan OV3660 mengirim JPEG untuk inferensi ke `POST /deteksi` dan frame preview ke `POST /api/esp32/frame`, menggunakan header `X-API-Key`. Dashboard mengambil snapshot terbaru melalui `GET /api/esp32/frame/latest` dan hasil/bounding box melalui `GET /api/deteksi/latest`; frame tidak ditumpuk dalam antrean.
-5. Setiap request divalidasi dengan `X-API-Key` atau cookie sesi. Ukuran gambar dibatasi 10 MB dan resolusi 40 megapiksel.
+2. Dashboard meminta login Supabase Auth (email/password atau Google). Setelah sesi Supabase aktif, dashboard memuat data.
+3. Jika `VEST_API_KEY` aktif, server memasang cookie sesi HttpOnly `vestcare_sesi` (12 jam) saat halaman utama dibuka.
+4. Komponen `CameraCapture` dapat membuka kamera browser dan mengirim frame ke `POST /deteksi`, atau menampilkan frame ESP32 dari `GET /api/esp32/frame/latest`.
+5. ESP32-S3 mengirim JPEG inferensi ke `POST /deteksi` dan frame preview ke `POST /api/esp32/frame`, keduanya dengan `X-API-Key`.
 6. Server menjalankan YOLO26n-seg, fuzzy Sugeno, pelacak gerak, dan perencana suara.
-7. Respons berisi daftar deteksi, level tertinggi, urgensi, status ragu, dan rencana suara.
-   Objek di luar lima kelas utama, seperti helm, dapat dimasukkan sebagai data penunjang di `data/datasets/penunjang/dataset_helm.zip`; saat training, labelnya dipetakan ke kelas internal dan tidak ditampilkan sebagai kelas utama. Model perlu dilatih ulang dengan contoh helm agar dapat menahan prediksi helm yang keliru sebagai mobil.
-8. Server menulis riwayat ke `data/runtime/riwayat.jsonl`.
+7. Respons berisi daftar deteksi, level tertinggi, urgensi, status ragu, `alert`, dan rencana suara.
+8. Server menulis riwayat ke `data/runtime/riwayat.jsonl` (atau path volume).
 9. Server menyinkronkan deteksi ke Supabase melalui REST API dengan service-role key.
-10. Saat startup, server memakai perangkat yang sudah tercatat di tabel `devices` (atau `VEST_SUPABASE_DEVICE_ID` bila diisi); perangkat baru hanya dibuat jika belum ada.
-11. Untuk setiap frame, server mengambil baris terakhir per objek, memperbarui baris yang sudah ada dengan `PATCH`, menambah baris baru dengan `POST`, dan menghapus duplikat dengan `DELETE`.
+10. Saat startup, server memakai perangkat yang sudah tercatat di tabel `devices` atau `VEST_SUPABASE_DEVICE_ID`; perangkat baru dibuat jika belum ada.
+11. Untuk setiap frame, server mengambil baris terakhir per objek, memperbarui baris yang ada dengan `PATCH`, menambah baris baru dengan `POST`, dan menghapus duplikat dengan `DELETE`.
 12. Semua objek dalam satu frame memakai `created_at` yang sama sehingga dapat dikelompokkan sebagai satu batch.
 13. Frame dengan signature objek, level, dan arah yang sama dilewati selama 10 detik untuk mencegah duplikasi.
-14. Dashboard membaca `devices`, `detections`, dan `gps_log` melalui `GET /dashboard/data`. Server memakai service-role key dan cookie sesi HttpOnly, sehingga kunci rahasia tidak pernah masuk ke browser.
+14. Dashboard membaca `devices`, `detections`, dan `gps_log` melalui `GET /dashboard/data`. Server memakai service-role key dan cookie sesi, sehingga kunci rahasia tidak pernah masuk ke browser.
 15. Jika Supabase belum lengkap atau sedang offline, dashboard memakai fallback `GET /riwayat`.
-16. Dashboard memuat ulang perangkat dan riwayat setiap 10 detik. Telemetri didorong lewat SSE dan tetap dipolling setiap 500 ms agar tunnel yang menahan SSE tidak membuat status macet. Status rompi online jika telemetri atau frame kamera baru diterima dalam 15 detik; dashboard memeriksa snapshot kamera setiap 100 ms dan menerima hasil deteksi ESP32 lewat SSE.
+16. Dashboard memuat ulang perangkat dan riwayat setiap 10 detik. Telemetri didorong lewat SSE dan tetap dipolling setiap 500 ms sebagai fallback bila proxy menahan SSE.
+17. Status rompi online jika telemetri atau frame kamera baru diterima dalam 15 detik. Dashboard memeriksa snapshot kamera setiap 100 ms dan menerima hasil deteksi ESP32 lewat SSE.
 
-Dashboard memantau hasil deteksi live tanpa membuka tampilan kamera; objek dan tingkat urgensinya ikut memperbarui ringkasan, kategori, dan daftar riwayat tanpa menunggu polling 10 detik. Baris objek yang masih terdeteksi diperbarui, bukan digandakan pada setiap frame. Entri live ini disimpan di tampilan selama sesi dashboard; riwayat permanen tetap berasal dari server/Supabase. Instruksi Ardi di dashboard mengikuti rencana audio dan perubahan urgensi yang sama dengan stream kamera ESP32. Saat objek yakin di depan terdeteksi kurang dari 0,50 m, buzzer terus berbunyi. Browser bisa memblokir audio otomatis; dashboard mencoba mengaktifkannya dan melanjutkan saat ada interaksi pertama pada halaman (misalnya klik atau tombol keyboard). TWS dapat dipakai bila dipasangkan ke ponsel/komputer yang membuka dashboard dan dipilih sebagai output audio. ESP32-S3 tidak mengirim audio langsung ke TWS.
+Dashboard memantau hasil deteksi live tanpa membuka tampilan kamera; objek dan tingkat urgensinya ikut memperbarui ringkasan, kategori, dan daftar riwayat tanpa menunggu polling 10 detik. Baris objek yang masih terdeteksi diperbarui, bukan digandakan pada setiap frame. Entri live ini disimpan di tampilan selama sesi dashboard; riwayat permanen tetap berasal dari server/Supabase. Instruksi Ardi di dashboard mengikuti rencana audio dan perubahan urgensi yang sama dengan stream kamera ESP32. Saat objek yakin di depan terdeteksi kurang dari 0,50 m, buzzer terus berbunyi. Browser bisa memblokir audio otomatis; dashboard mencoba mengaktifkannya dan melanjutkan saat ada interaksi pertama pada halaman.
 
 ### Tabel alur data
 
@@ -420,157 +712,327 @@ Dashboard memantau hasil deteksi live tanpa membuka tampilan kamera; objek dan t
 | Akuisisi | `CameraCapture.jsx` | Frame kamera browser | Blob gambar dan `jarak_m` | HTTP multipart ke `/deteksi` |
 | Akuisisi | ESP32-S3 N16R8 + OV3660 | Frame kamera | JPEG dan `X-API-Key` | HTTP multipart ke `/deteksi` |
 | Inferensi | `InferensiVest` | Gambar RGB | Box, mask, confidence | Memori server |
-| Keputusan | `fuzzysugeno.py` | Box, mask, jarak | Deteksi, urgensi, level, getar | Memori server |
+| Keputusan | `fuzzysugeno.py` | Box, mask, jarak | Deteksi, urgensi, level, `alert` | Memori server |
 | Suara | `PerencanaSuara` | Daftar deteksi | Rencana segmen dan teks | Memori server |
 | Riwayat lokal | `_simpan_riwayat` | Hasil deteksi | Baris JSONL | `data/runtime/riwayat.jsonl` |
 | Sinkronisasi | `_simpan_deteksi_supabase` | Hasil deteksi | Baris `detections` | Supabase REST |
-| Baca web | `useVestData.js` | `GET /dashboard/data`, SSE `/api/telemetri/stream`, `GET /riwayat` | State dashboard realtime | HTTP same-origin + cookie sesi |
+| Baca web | `useVestData.js` | `/dashboard/data`, SSE, `/riwayat` | State dashboard realtime | HTTP same-origin + cookie sesi |
 | Fallback web | FastAPI | Perangkat atau Supabase kosong | Data dashboard | `/riwayat` dan polling `/api/telemetri` |
 
-### Tabel Supabase yang dipakai
+### Autentikasi dan akses
 
-| Tabel | Kolom yang dibaca atau ditulis | Fungsi |
+| Metode | Nilai | Digunakan oleh |
 |---|---|---|
-| `devices` | `id`, `name`, `student_name`, `school`, `battery`, `online`, `last_seen` | Identitas dan status perangkat |
-| `detections` | `id`, `device_id`, `object`, `distance_m`, `confidence`, `urgency`, `lat`, `lng`, `urgency_score`, `created_at` | Riwayat objek terdeteksi |
-| `gps_log` | `id`, `device_id`, `lat`, `lng`, `accuracy`, `created_at` | Posisi terakhir perangkat |
+| API key | Header `X-API-Key`, minimal 32 karakter | ESP32-S3, Postman, skrip |
+| Cookie sesi | `vestcare_sesi`, HttpOnly, SameSite Lax, 12 jam | Dashboard browser |
+| Query API key | `?api_key=...` untuk SSE | Klien non-browser |
+| Supabase Auth | Email/password atau Google OAuth | Login dashboard |
+| Telemetri publik | Tanpa API key | ESP32-S3 mengirim jarak/GPS |
 
-Catatan skema:
-
-- Server menyimpan posisi GPS valid dari telemetri Wemos ke `gps_log`; dashboard mengutamakan posisi live dan tidak menampilkan posisi tersimpan ketika perangkat online tetapi GPS belum mendapat fix.
-- Peta dashboard memakai koordinat GPS live dari ESP32-S3 saja; posisi lama dari riwayat/Supabase tidak dipakai sebagai pengganti fix GPS. Fix dianggap aktif selama data lokasi diperbarui dalam 5 detik terakhir. Jika koordinat belum tersedia, dashboard meminta pengguna membawa rompi ke area terbuka karena sinyal GPS sulit diterima di dalam ruangan.
-- Latitude dan longitude dikirim sebagai derajat desimal (`lat`, `lng`), sesuai urutan yang dipakai peta Google Maps.
-- Peta dashboard memakai Google Maps. Bila `GOOGLE_MAPS_API_KEY` diisi, peta memakai Google Maps JavaScript API sehingga marker rompi, jejak perjalanan, dan marker objek bergerak realtime. Bila kunci belum diisi, dashboard otomatis memakai Google Maps mode embed dan tetap menampilkan koordinat, jarak, satelit, HDOP, kecepatan, dan waktu GPS dari Wemos.
-- Marker objek pada peta adalah perkiraan dari arah (`kiri`/`depan`/`kanan`) dan jarak deteksi terhadap posisi rompi. Bila baris deteksi sudah memiliki `lat`/`lng`, koordinat itu yang dipakai.
-- Jejak perjalanan disimpan di memori server (maksimal 300 titik) dan ikut dikirim pada setiap event SSE maupun `/dashboard/data`.
-- Kolom `urgency` memakai nilai `Tinggi`, `Sedang`, atau `Rendah`. Kolom `urgency_score` memakai skor fuzzy 0 sampai 100.
-- Deteksi `umum` dari sensor ultrasonik tetap tampil di dashboard dan riwayat lokal, tetapi tidak ditulis ke tabel `detections` karena constraint tabel hanya menerima lima kelas model.
-- Repo tidak menyertakan migrasi SQL. Pastikan tabel dan kolom di atas sudah ada di proyek Supabase.
-- Aktifkan Row Level Security. Dashboard tidak lagi membaca tabel langsung dari browser; data diambil melalui `/dashboard/data` memakai service-role key di server.
-- Service-role key hanya boleh berada di `.env` root dan tidak boleh masuk ke bundle frontend.
-
-### Konfigurasi environment
-
-Backend, dibaca dari `.env` root:
-
-| Kunci | Fungsi |
-|---|---|
-| `VEST_API_KEY` | Kunci API minimal 32 karakter untuk `X-API-Key` dan penandatanganan cookie sesi |
-| `VEST_MODEL_PATH` | Path bobot model, default `models/best.pt` |
-| `VEST_IMGSZ` | Ukuran inferensi, default 512 |
-| `VEST_CONF` | Ambang confidence deteksi, default 0,35 |
-| `VEST_CONF_RAGU` | Ambang penanda ragu, default 0,50 |
-| `VEST_SUARA_FOLDER` | Folder pustaka suara, default `data/runtime/audio/cache_ardi` |
-| `VEST_RIWAYAT_PATH` | Path riwayat JSONL, default `data/runtime/riwayat.jsonl` |
-| `VEST_RIWAYAT_MAX_BYTES` | Batas ukuran riwayat sebelum diputar, default 5 MB (minimum 256 KB) |
-| `VEST_RIWAYAT_KEEP_ENTRIES` | Jumlah entri terbaru yang disimpan saat rotasi, default 4.000 |
-| `VEST_CORS_ORIGINS` | Daftar origin frontend terpisah dipisah koma; default `*` untuk same-origin |
-| `VEST_PUBLIC_URL` | URL HTTPS publik eksplisit untuk balasan discovery ESP32; jika kosong, API memakai `RAILWAY_PUBLIC_DOMAIN` di Railway |
-| `VEST_HOST` | Host server, default `0.0.0.0` |
-| `VEST_PORT` | Port server, default `8080` |
-| `PORT` | Port yang disediakan platform deploy seperti Railway; mengesampingkan `VEST_PORT` |
-| `VEST_ENABLE_LAN_DISCOVERY` | Aktifkan listener UDP LAN; default aktif lokal dan dimatikan dalam image Railway |
-| `GOOGLE_MAPS_API_KEY` | Kunci Google Maps JavaScript API untuk marker, jejak, dan objek realtime; bila kosong dashboard memakai mode embed |
-| `VEST_MAP_DEFAULT_LAT` | Latitude pusat peta saat GPS belum fix, default `-8.1689` |
-| `VEST_MAP_DEFAULT_LNG` | Longitude pusat peta saat GPS belum fix, default `113.7020` |
-| `VEST_MAP_ZOOM` | Zoom awal peta Google Maps, default `17` |
-| `SUPABASE_URL` | URL proyek Supabase |
-| `SUPABASE_SERVICE_ROLE_KEY` | Service-role key untuk penulisan backend |
-| `VEST_SUPABASE_DEVICE_ID` | UUID perangkat nyata di tabel `devices`; bila kosong, server memakai perangkat pertama yang sudah ada |
-
-Frontend, dibaca dari `web/react/.env.local`:
-
-| Kunci | Fungsi |
-|---|---|
-| `NEXT_PUBLIC_SUPABASE_URL` atau `VITE_SUPABASE_URL` | URL proyek Supabase (opsional, untuk realtime di masa depan) |
-| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` atau `VITE_SUPABASE_ANON_KEY` | Publishable atau anon key (opsional, bukan untuk menulis data) |
-| `VITE_GOOGLE_MAPS_API_KEY` | Alternatif kunci Google Maps saat build; kunci runtime `GOOGLE_MAPS_API_KEY` di `.env` server lebih dulu dipakai agar tidak perlu rebuild |
+Endpoint `/api/telemetri` sengaja publik agar perangkat hanya perlu konfigurasi Wi-Fi. Konsekuensinya, siapa pun yang mengetahui URL server dapat mengirim telemetri palsu. Jangan gunakan endpoint ini untuk data sensitif; endpoint lain tetap memerlukan API key atau cookie.
 
 ### Endpoint API
 
-| Method | Path | Keterangan |
-|---|---|---|
-| `GET` | `/info` | Info versi, model, `imgsz`, `conf`, `conf_ragu`, status engine |
-| `GET` | `/status` | Status server, engine, suara, dan koneksi Supabase |
-| `GET` | `/sesi` | Perbarui cookie sesi browser tanpa memuat ulang dashboard |
-| `GET` | `/healthz` | Liveness probe proses API |
-| `GET` | `/readyz` | Readiness probe engine, API key, dan dashboard |
-| `GET` | `/` | Dashboard React VestCare |
-| `GET` | `/app` | Alias dashboard React VestCare |
-| `GET` | `/docs` | Dokumentasi OpenAPI |
-| `GET` | `/dashboard/data` | Data perangkat, deteksi, GPS, dan jejak dari Supabase/server |
-| `GET` | `/config` | Konfigurasi publik dashboard: titik pusat peta, zoom, dan kunci Google Maps |
-| `POST` | `/api/telemetri` | Telemetri jarak dan GPS dari Wemos; endpoint publik tanpa API key |
-| `GET` | `/api/telemetri` | Telemetri terakhir, status online, dan jejak GPS |
-| `GET` | `/api/telemetri/stream` | Server-Sent Events telemetri realtime untuk peta Google Maps |
-| `GET` | `/api/deteksi/latest` | Hasil deteksi kamera terbaru dan status kesegarannya |
-| `GET` | `/api/deteksi/stream` | Server-Sent Events hasil deteksi terbaru |
-| `POST` | `/api/esp32/frame` | Menerima frame JPEG terbaru dari kamera ESP32 |
-| `GET` | `/api/esp32/frame/latest` | Snapshot JPEG terbaru dengan cache ETag |
-| `GET` | `/api/esp32/status` | Ketersediaan frame ESP32 untuk pemilihan sumber kamera dashboard |
-| `GET` | `/api/esp32/stream` | MJPEG stream frame ESP32 untuk klien non-browser |
-| `POST` | `/deteksi` | Upload gambar multipart dan `jarak_m` opsional |
-| `POST` | `/deteksi/suara` | Sama seperti `/deteksi`, dengan rencana suara |
-| `POST` | `/peringatan` | JSON `{ "skor_risiko": 0..1, "jarak_m": ... }` |
-| `GET` | `/riwayat?limit=20` | Riwayat deteksi lokal terakhir |
-| `GET` | `/suara/pratinjau` | Contoh rencana suara |
-| `GET` | `/suara/{nama_berkas}` | Berkas klip suara yang diizinkan |
+| Method | Path | Akses | Keterangan |
+|---|---|---|---|
+| `GET` | `/` | Publik | Dashboard React VestCare; memasang cookie sesi |
+| `GET` | `/app` | Publik | Alias dashboard React |
+| `GET` | `/docs` | Publik | Dokumentasi OpenAPI |
+| `GET` | `/info` | Publik | Versi, model, `imgsz`, `conf`, `conf_ragu`, status engine |
+| `GET` | `/status` | Publik | Status server, engine, suara, dan Supabase |
+| `GET` | `/healthz` | Publik | Liveness probe proses API |
+| `GET` | `/readyz` | Publik | Readiness engine, API key, dan dashboard |
+| `GET` | `/sesi` | Publik | Perbarui cookie sesi browser |
+| `GET` | `/config` | Publik | Konfigurasi peta: pusat, zoom, kunci Google Maps |
+| `GET` | `/dashboard/data` | API key/cookie | Perangkat, deteksi, GPS, telemetri, jejak |
+| `POST` | `/deteksi` | API key/cookie | Upload gambar multipart + `jarak_m` opsional |
+| `POST` | `/deteksi/suara` | API key/cookie | Seperti `/deteksi`, dengan rencana suara |
+| `POST` | `/peringatan` | API key/cookie | JSON `{ "skor_risiko": 0..1, "jarak_m": ... }` |
+| `GET` | `/riwayat?limit=20` | API key/cookie | Riwayat deteksi lokal terakhir |
+| `GET` | `/suara/pratinjau` | API key/cookie | Contoh rencana suara |
+| `GET` | `/suara/{nama_berkas}` | API key/cookie | Berkas klip suara yang diizinkan |
+| `POST` | `/api/telemetri` | Publik | Telemetri jarak dan GPS dari perangkat |
+| `GET` | `/api/telemetri` | Publik | Telemetri terakhir, status online, jejak GPS |
+| `GET` | `/api/telemetri/stream` | API key/cookie | SSE telemetri realtime |
+| `GET` | `/api/deteksi/latest` | API key/cookie | Hasil deteksi terbaru dan status kesegaran |
+| `GET` | `/api/deteksi/stream` | API key/cookie | SSE hasil deteksi terbaru |
+| `POST` | `/api/esp32/frame` | API key/cookie | Menerima frame JPEG terbaru dari ESP32 |
+| `GET` | `/api/esp32/frame/latest` | API key/cookie | Snapshot JPEG terbaru dengan ETag |
+| `GET` | `/api/esp32/status` | API key/cookie | Ketersediaan frame ESP32 |
+| `GET` | `/api/esp32/stream` | API key/cookie | MJPEG stream frame ESP32 |
+| `POST` | `/api/esp32/stream` | API key/cookie | Registrasi stream ESP32 |
 
-Jika `VEST_API_KEY` aktif, sertakan header `X-API-Key` pada setiap request yang diproteksi. Browser memakai cookie sesi HttpOnly yang dipasang saat halaman utama dibuka.
+Alias lama `/telemetri`, `/telemetri/stream`, dan `/esp32/stream` tetap tersedia untuk kompatibilitas.
+
+### Field telemetri
+
+| Field | Tipe | Arti |
+|---|---|---|
+| `jarak` | float | Jarak ultrasonik dalam meter |
+| `valid_jarak` | boolean | Apakah pembacaan ultrasonik valid |
+| `lat`, `lng` | float | Koordinat GPS derajat desimal |
+| `alt` | float | Ketinggian |
+| `spd` | float | Kecepatan km/jam |
+| `sat` | integer | Jumlah satelit terkunci |
+| `hdop` | float | Horizontal dilution of precision |
+| `fix` | boolean | GPS fix valid |
+| `terbaca` | boolean | Modul GPS merespons |
+| `waktu` | string | Waktu GPS |
+| `battery` | float | Persentase baterai |
+
+### Tabel Supabase yang dipakai
+
+| Tabel | Kolom utama | Fungsi |
+|---|---|---|
+| `devices` | `id`, `name`, `student_name`, `school`, `battery`, `online`, `last_seen`, `owner_id`, `key_hash`, `pairing_code`, `pairing_expires_at`, `created_at` | Identitas dan status perangkat |
+| `detections` | `id`, `device_id`, `object`, `distance_m`, `confidence`, `urgency`, `lat`, `lng`, `urgency_score`, `created_at` | Riwayat objek terdeteksi |
+| `gps_log` | `id`, `device_id`, `lat`, `lng`, `accuracy`, `created_at` | Posisi terakhir perangkat |
+| `profiles` | `id`, `username`, `password_hash`, `full_name`, `email`, `auth_user_id`, `created_at` | Profil pengguna dan sinkronisasi auth |
+
+Catatan skema:
+
+- Migrasi tersedia di `supabase/migrations/20261126104702_remote_schema.sql` dan `supabase/migrations/20261126105000_auth_profile_sync.sql`.
+- `detections.object` hanya menerima lima kelas: `lubang`, `orang`, `motor`, `mobil`, `pohon`.
+- `detections.urgency` hanya menerima `Tinggi`, `Sedang`, atau `Rendah`.
+- `detections.confidence` dibatasi 0-1.
+- `devices.battery` dibatasi 0-100.
+- RLS aktif pada keempat tabel. Policy SELECT memakai `auth.uid()` dan relasi `profiles.auth_user_id`.
+- Migrasi auth menambahkan trigger `sync_profile_after_auth_insert` untuk membuat profil saat user Supabase Auth baru dibuat.
+- Server memakai service-role key; browser hanya memakai publishable/anon key untuk Supabase Auth.
+- Deteksi `umum` dari sensor ultrasonik tetap tampil di dashboard dan riwayat lokal, tetapi tidak ditulis ke `detections` karena constraint tabel hanya menerima lima kelas model.
+- Posisi GPS valid dari telemetri disimpan ke `gps_log`; dashboard mengutamakan posisi live dan tidak menampilkan posisi tersimpan ketika perangkat online tetapi GPS belum fix.
+- Peta dashboard memakai koordinat GPS live dari ESP32-S3 saja; posisi lama dari riwayat/Supabase tidak dipakai sebagai pengganti fix GPS. Fix dianggap aktif selama data lokasi diperbarui dalam 5 detik terakhir.
+- Marker objek pada peta adalah perkiraan dari arah (`kiri`/`depan`/`kanan`) dan jarak deteksi terhadap posisi rompi. Bila baris deteksi sudah memiliki `lat`/`lng`, koordinat itu yang dipakai.
+- Jejak perjalanan disimpan di memori server (maksimal 300 titik) dan ikut dikirim pada setiap event SSE maupun `/dashboard/data`.
+
+### Konfigurasi environment backend
+
+| Kunci | Default | Fungsi |
+|---|---|---|
+| `VEST_API_KEY` | tidak ada | Kunci API minimal 32 karakter untuk `X-API-Key` dan penandatanganan cookie |
+| `VEST_MODEL_PATH` | `models/best.pt` | Path bobot model |
+| `VEST_IMGSZ` | `512` | Ukuran inferensi |
+| `VEST_CONF` | `0.35` | Ambang confidence deteksi |
+| `VEST_CONF_RAGU` | `0.50` | Ambang penanda ragu |
+| `VEST_SUARA_FOLDER` | `data/runtime/audio/cache_ardi` | Folder pustaka suara |
+| `VEST_RIWAYAT_PATH` | `data/runtime/riwayat.jsonl` | Path riwayat JSONL |
+| `VEST_RIWAYAT_MAX_BYTES` | `5242880` | Batas ukuran riwayat sebelum rotasi (minimum 256 KB) |
+| `VEST_RIWAYAT_KEEP_ENTRIES` | `4000` | Jumlah entri terbaru saat rotasi (minimum 100) |
+| `VEST_CORS_ORIGINS` | `*` | Daftar origin frontend dipisah koma |
+| `VEST_PUBLIC_URL` | kosong | URL HTTPS publik untuk balasan discovery; fallback `RAILWAY_PUBLIC_DOMAIN` |
+| `VEST_HOST` | `0.0.0.0` | Host server |
+| `VEST_PORT` | `8080` | Port server |
+| `PORT` | - | Port platform; mengesampingkan `VEST_PORT` |
+| `VEST_ENABLE_LAN_DISCOVERY` | `1` | Listener UDP LAN; Dockerfile Railway menyetel `0` |
+| `GOOGLE_MAPS_API_KEY` | kosong | Kunci Google Maps JavaScript API; fallback `VITE_GOOGLE_MAPS_API_KEY` |
+| `VEST_MAP_DEFAULT_LAT` | `-8.1689` | Latitude pusat peta saat GPS belum fix |
+| `VEST_MAP_DEFAULT_LNG` | `113.7020` | Longitude pusat peta saat GPS belum fix |
+| `VEST_MAP_ZOOM` | `17` | Zoom awal peta |
+| `SUPABASE_URL` | kosong | URL proyek Supabase |
+| `SUPABASE_SERVICE_ROLE_KEY` | kosong | Service-role key untuk backend |
+| `VEST_SUPABASE_DEVICE_ID` | kosong | UUID perangkat di tabel `devices`; jika kosong memakai perangkat pertama |
+
+### Konfigurasi environment frontend
+
+| Kunci | Fungsi |
+|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` atau `VITE_SUPABASE_URL` | URL Supabase untuk Supabase Auth di browser |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` atau `VITE_SUPABASE_ANON_KEY` | Publishable/anon key untuk Supabase Auth |
+| `VITE_GOOGLE_MAPS_API_KEY` | Alternatif kunci Google Maps saat build; kunci runtime `GOOGLE_MAPS_API_KEY` lebih diutamakan |
 
 ### Pengujian dengan Postman
 
-Gunakan `http://127.0.0.1:8080` sebagai base URL lokal. Untuk menguji melalui
-Cloudflare Quick Tunnel, gunakan URL HTTPS yang dicetak oleh `server.py`.
+Gunakan `http://127.0.0.1:8080` untuk lokal atau domain Railway untuk produksi.
 
 1. `GET /status` memeriksa kesiapan server dan model.
-2. `POST /deteksi` memakai **Body → form-data**: `gambar` bertipe **File** dan
-   `jarak_m` bertipe **Text** (opsional, dalam meter). Jangan mengatur
-   `Content-Type` secara manual; Postman akan menambahkan multipart boundary.
-3. Jika `VEST_API_KEY` diaktifkan, tambahkan header `X-API-Key` dengan nilai dari
-   `.env` untuk request yang diproteksi.
-4. `GET /riwayat?limit=20` menampilkan hasil terbaru dalam bentuk JSON
-   `{"total": ..., "ditampilkan": ..., "data": [...]}`.
+2. `GET /readyz` memastikan engine, API key, dan dashboard siap.
+3. `POST /deteksi` memakai **Body -> form-data**: `gambar` bertipe **File** dan `jarak_m` bertipe **Text** (opsional, meter). Jangan mengatur `Content-Type` manual; Postman menambahkan multipart boundary.
+4. Jika `VEST_API_KEY` aktif, tambahkan header `X-API-Key` dengan nilai dari `.env`/Railway Variables.
+5. `GET /riwayat?limit=20` menampilkan hasil terbaru dalam bentuk JSON `{"total": ..., "ditampilkan": ..., "data": [...]}`.
+6. Untuk SSE, gunakan cookie sesi dashboard atau tambahkan `?api_key=...` pada URL.
 
-Respons `POST /deteksi` berisi `id`, `waktu`, `sumber`, ringkasan hasil inferensi,
-daftar `deteksi`, dan status sinkronisasi Supabase. Jika upload gagal, periksa
-status HTTP dan field `detail` pada respons validasi FastAPI.
+Respons `POST /deteksi` berisi `id`, `waktu`, `sumber`, ringkasan hasil inferensi, daftar `deteksi`, status sinkronisasi Supabase, dan `suara`. Jika upload gagal, periksa status HTTP dan field `detail` pada respons validasi FastAPI.
 
-## Struktur proyek
+## Pengujian end-to-end
 
-| Path | Fungsi |
+| Aspek | Metode | Hasil | Bukti |
+|---|---|---|---|
+| Validasi model | 312 gambar validasi, `best.pt`, `imgsz=512` | Box mAP50 85,41%; mask mAP50 84,76% | `ringkasan_test.json` |
+| Akurasi tingkat gambar | Conf minimal 0,25 | 80,45% (251/312) | `laporan_akurasi.txt` |
+| Kecepatan | 100 gambar, batch 1, GPU GTX 1650 Max-Q | 17,21 ms/gambar; 58,1 FPS | `ringkasan_test.json` |
+| Quality gate | 4 metrik x 5 kelas, ambang 98% | Tidak lulus; bobot tidak diganti otomatis | `training_report.json` |
+| API health | `GET /healthz`, `GET /readyz` | 200 bila engine, API key, dashboard siap | `server_rest_api.py` |
+| Kontrak API | Postman `GET /status`, `POST /deteksi`, `GET /riwayat` | Sesuai skema multipart dan JSON | Bagian Postman |
+| Integrasi kamera | ESP32-S3 mengirim JPEG ke `/deteksi` dan `/api/esp32/frame` | Frame terbaru disimpan, preview via ETag | `esp32_s3.ino`, `CameraCapture.jsx` |
+| Telemetri | ESP32-S3 mengirim jarak/GPS setiap 1 detik | Dashboard menampilkan online, jarak, GPS | `esp32_s3.ino`, `useVestData.js` |
+| Alert audio | Level fuzzy -> `alert` -> UART/TWS; browser memutar klip | `ALERT 0/1/2`, klip Ardi, buzzer <0,50 m | `fuzzysugeno.py`, `CameraCapture.jsx` |
+| Sinkronisasi Supabase | PATCH/POST/DELETE per objek, deduplikasi | Baris `detections`/`gps_log` terbarui | `server_rest_api.py`, migrasi |
+| Dashboard | Login Supabase, peta Google Maps, SSE + polling | Data live dan riwayat tampil | `AuthGate.jsx`, `GpsMap.jsx` |
+| Railway | Docker build, `/readyz`, domain publik, volume | Service siap bila health check lulus | `Dockerfile`, `railway.json` |
+
+Urutan uji end-to-end yang disarankan:
+
+1. Build dashboard: `cd web/react && npm ci && npm run build`.
+2. Siapkan `.env` atau Railway Variables: `VEST_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `GOOGLE_MAPS_API_KEY`.
+3. Jalankan API lokal atau deploy Railway; buka `/readyz` sampai `status: ready`.
+4. Buka dashboard, login Supabase, lalu pastikan peta dan status perangkat muncul.
+5. Nyalakan ESP32-S3, isi Wi-Fi lewat portal, dan pastikan Serial Monitor menunjukkan HTTPS `/status` 200.
+6. Arahkan objek ke kamera; pastikan `POST /deteksi` mengembalikan `level_tertinggi`, `alert`, dan `suara`.
+7. Dekatkan objek ke depan <0,50 m; pastikan buzzer dashboard aktif dan `alert` menjadi 2.
+8. Periksa `GET /riwayat` dan tabel Supabase; pastikan tidak ada duplikasi per objek.
+9. Matikan Supabase sementara; pastikan API tetap melayani deteksi dan dashboard memakai fallback.
+10. Jalankan evaluasi ulang dengan `python start_eval.py` bila model/dataset berubah.
+
+## Deploy Railway
+
+### Ringkasan service
+
+| Item | Nilai |
 |---|---|
-| `server.py` | Entry point untuk menjalankan API, dashboard, Cloudflare Quick Tunnel, dan UDP discovery ESP32 |
-| `server_rest_api.py` | Aplikasi FastAPI, endpoint, engine YOLO, fuzzy, suara, riwayat, dan Supabase |
-| `fuzzysugeno.py` | Fuzzy Sugeno, `analisis_hasil`, `PelacakGerak`, `IngatanHalangan`, dan penanda ragu |
-| `start_train.py` | Entry point pipeline training |
-| `train_semua.py` | Pipeline training 5 kelas, quality gate, evaluasi akhir, dan pembersihan run lama |
-| `start_eval.py` | Evaluasi model per kelas dan per varian dataset |
-| `dataset_gabungan.yaml` | Konfigurasi dataset gabungan 5 kelas |
-| `models/best.pt` | Bobot aktif yang dipakai server |
-| `web/react/` | Dashboard React, hasil build disajikan dari `web/react/dist/` |
-| `web/react/src/useVestData.js` | Pembacaan `/dashboard/data`, SSE telemetri, dan fallback `/riwayat` |
-| `web/react/src/components/CameraCapture.jsx` | Kamera, pengiriman frame, kotak objek, dan pemutaran suara |
-| `web/react/src/components/GpsMap.jsx` | Peta Google Maps realtime, marker objek, jejak GPS, dan panel telemetri Wemos |
-| `library/suara-natural-ai/` | Pustaka klip suara, perakit kalimat, dan contoh integrasi |
-| `data/results/runs/segment/runs/` | Artefak training, laporan, dan evaluasi |
-| `data/datasets/` | Dataset sumber, utama, dan penunjang |
-| `data/results/` | Hasil training, evaluasi, split, dan log |
-| `data/runtime/` | Riwayat server, URL publik, dan cache audio |
-| `hardware/arduino/` | Firmware Wemos |
-| `data/runtime/riwayat.jsonl` | Riwayat deteksi lokal, tidak di-commit |
+| Builder | Dockerfile multi-stage |
+| Build web | `node:22-bookworm-slim`, `npm ci`, `npm run build` |
+| Runtime | `python:3.12-slim-bookworm` |
+| PyTorch | CPU wheel dari `download.pytorch.org/whl/cpu` |
+| Start command | `uvicorn server_rest_api:app --host 0.0.0.0 --port $PORT --workers 1 --proxy-headers --forwarded-allow-ips=* --no-access-log` |
+| Health check | `/readyz`, timeout 300 detik |
+| Restart policy | `ON_FAILURE`, maksimum 10 percobaan |
+| Replica | 1 |
+| Volume | `/data` untuk riwayat |
+| Domain default | `https://vestcare-detection-object-production.up.railway.app` |
+| File konfigurasi | `Dockerfile`, `railway.json`, `.railway/railway.ts`, `.railwayignore` |
 
-## Cara menjalankan
+`Dockerfile` membangun dashboard React di stage Node, lalu menyalin `web/react/dist` ke image Python. Image menyertakan `models/best.pt` dan pustaka audio `data/runtime/audio/cache_ardi`, tetapi tidak menyertakan `data/results/`, dataset, virtualenv, atau `node_modules`. `.railwayignore` mengatur hal yang sama untuk upload Railway CLI.
+
+### Langkah deploy
+
+1. Login dan hubungkan project:
+   ```powershell
+   railway login
+   railway link
+   ```
+   Jika belum ada project, buat project baru dan service Dockerfile.
+2. Set **Variables** service sebelum deploy pertama. Minimal:
+   ```text
+   VEST_API_KEY=<kunci acak minimal 32 karakter>
+   VEST_MODEL_PATH=models/best.pt
+   VEST_IMGSZ=512
+   VEST_CONF=0.35
+   VEST_CONF_RAGU=0.50
+   SUPABASE_URL=https://<proyek>.supabase.co
+   SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
+   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=<publishable-key>
+   GOOGLE_MAPS_API_KEY=<kunci-google-maps>
+   ```
+   `SUPABASE_URL` dipakai runtime dan build arg dashboard. `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` dipakai build arg. Jangan menaruh service-role key di variabel `NEXT_PUBLIC_*`.
+3. Deploy:
+   ```powershell
+   railway up
+   ```
+   Railway membangun image, menjalankan container, dan memeriksa `/readyz`.
+4. Buka **Settings -> Networking -> Public Networking**, lalu **Generate Domain** bila belum ada. Atau jalankan:
+   ```powershell
+   railway domain
+   ```
+5. Tambahkan **Volume** dan mount ke `/data`, lalu set:
+   ```text
+   VEST_RIWAYAT_PATH=/data/riwayat.jsonl
+   ```
+   Tanpa volume, riwayat lokal hilang saat container diganti. Data live kamera/telemetri tetap di memori.
+6. Verifikasi:
+   ```text
+   GET https://<domain>/healthz
+   GET https://<domain>/readyz
+   GET https://<domain>/info
+   GET https://<domain>/docs
+   ```
+   `/readyz` harus mengembalikan `status: ready`. Jika 503, periksa `komponen` pada respons.
+7. Salin domain ke firmware bila berbeda dari default:
+   - `hardware/arduino/esp32_s3/esp32_s3.ino` -> `DEFAULT_RAILWAY_URL`
+   - `hardware/arduino/esp32_s3/secrets.h` -> `VEST_SERVER_URL`
+   - `web/react/src/components/LoginPage.jsx` -> `GOOGLE_OAUTH_REDIRECT_URL`
+   - Supabase Auth -> **URL Configuration -> Redirect URLs**
+   - Google Maps key restrictions -> HTTP referrers domain dashboard
+8. Flash ulang firmware setelah mengubah URL atau API key.
+
+### Variabel Railway
+
+| Variabel | Scope | Wajib | Nilai contoh | Fungsi |
+|---|---|---|---|---|
+| `VEST_API_KEY` | Runtime | Ya | `<32+ karakter>` | API key dan tanda tangan cookie |
+| `VEST_MODEL_PATH` | Runtime | Tidak | `models/best.pt` | Bobot model |
+| `VEST_IMGSZ` | Runtime | Tidak | `512` | Ukuran inferensi |
+| `VEST_CONF` | Runtime | Tidak | `0.35` | Ambang deteksi |
+| `VEST_CONF_RAGU` | Runtime | Tidak | `0.50` | Ambang ragu |
+| `VEST_SUARA_FOLDER` | Runtime | Tidak | `data/runtime/audio/cache_ardi` | Pustaka audio |
+| `VEST_RIWAYAT_PATH` | Runtime | Tidak | `/data/riwayat.jsonl` | Riwayat lokal |
+| `VEST_RIWAYAT_MAX_BYTES` | Runtime | Tidak | `5242880` | Batas rotasi |
+| `VEST_RIWAYAT_KEEP_ENTRIES` | Runtime | Tidak | `4000` | Entri yang dipertahankan |
+| `VEST_CORS_ORIGINS` | Runtime | Tidak | `*` | Origin frontend |
+| `VEST_PUBLIC_URL` | Runtime | Tidak | `https://<domain>` | URL discovery |
+| `VEST_ENABLE_LAN_DISCOVERY` | Runtime | Tidak | `0` | Discovery LAN |
+| `GOOGLE_MAPS_API_KEY` | Runtime | Tidak | `<kunci>` | Google Maps |
+| `VEST_MAP_DEFAULT_LAT` | Runtime | Tidak | `-8.1689` | Pusat peta |
+| `VEST_MAP_DEFAULT_LNG` | Runtime | Tidak | `113.7020` | Pusat peta |
+| `VEST_MAP_ZOOM` | Runtime | Tidak | `17` | Zoom peta |
+| `SUPABASE_URL` | Runtime + build | Tidak | `https://<proyek>.supabase.co` | Supabase dan build dashboard |
+| `SUPABASE_SERVICE_ROLE_KEY` | Runtime | Tidak | `<service-role-key>` | Sinkronisasi server |
+| `VEST_SUPABASE_DEVICE_ID` | Runtime | Tidak | `<uuid>` | Perangkat Supabase |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Build | Tidak | `<publishable-key>` | Supabase Auth browser |
+| `VITE_GOOGLE_MAPS_API_KEY` | Build | Tidak | `<kunci>` | Fallback Google Maps |
+| `PORT` | Runtime | Otomatis | `8080` | Port dari Railway |
+| `RAILWAY_PUBLIC_DOMAIN` | Runtime | Otomatis | `<domain>` | Domain publik Railway |
+
+Catatan:
+
+- `VEST_API_KEY` yang kosong atau kurang dari 32 karakter membuat `/readyz` gagal dan API menolak request terproteksi.
+- `VEST_ENABLE_LAN_DISCOVERY=0` sudah disetel di Dockerfile; jangan diubah untuk Railway.
+- `VEST_PUBLIC_URL` opsional; API memakai `RAILWAY_PUBLIC_DOMAIN` bila kosong.
+- Service-role key hanya untuk backend. Jangan pernah memakai nama `NEXT_PUBLIC_*` atau `VITE_*` untuk secret ini.
+- Jika `SUPABASE_URL` diubah, deploy ulang agar dashboard build memakai URL baru.
+
+### Volume dan audio
+
+- Riwayat lokal ditulis ke `VEST_RIWAYAT_PATH`. Dengan volume `/data`, gunakan `/data/riwayat.jsonl`.
+- Rotasi otomatis: file aktif dibatasi sekitar 5 MB dan 4.000 entri terbaru; file sebelumnya menjadi `riwayat.jsonl.1`.
+- Pustaka audio Ardi sudah ada di image. Jangan mount volume kosong ke `data/runtime/audio/cache_ardi`, karena akan menutupi klip bawaan.
+- Jika ingin audio kustom, unggah klip + `manifest.json` ke volume, lalu set `VEST_SUARA_FOLDER=/data/audio`.
+- Tanpa klip audio, inferensi tetap berjalan; dashboard menampilkan pesan bahwa audio tidak tersedia.
+
+### Domain, OAuth, dan firmware
+
+- Domain service Railway tidak berubah saat redeploy biasa. Domain berubah jika domain/service dihapus atau diganti.
+- `DEFAULT_RAILWAY_URL` di firmware dan `GOOGLE_OAUTH_REDIRECT_URL` di `LoginPage.jsx` memakai domain produksi saat ini. Jika domain berbeda, ubah keduanya.
+- Tambahkan domain dashboard ke **Supabase Auth -> URL Configuration -> Redirect URLs** agar login Google kembali ke dashboard yang benar.
+- Batasi Google Maps API key ke domain Railway dan API **Maps JavaScript API**.
+- ESP32-S3 memakai HTTPS 443 dan tidak memerlukan discovery LAN untuk Railway.
+- Jika domain berubah, flash ulang firmware dengan `VEST_SERVER_URL` baru dan API key yang sama.
+
+### Troubleshooting Railway
+
+| Gejala | Kemungkinan penyebab | Tindakan |
+|---|---|---|
+| `/readyz` 503 `engine` | `models/best.pt` tidak ada atau gagal dimuat | Pastikan file di image, cek log `[API] Engine` |
+| `/readyz` 503 `api_key` | `VEST_API_KEY` kosong/<32 karakter | Set variable, redeploy |
+| `/readyz` 503 `dashboard` | `web/react/dist/index.html` tidak ada | Periksa stage build Node dan log `npm run build` |
+| Build gagal `npm ci` | `package-lock.json` tidak cocok | Jalankan `npm install` lokal, commit lockfile |
+| Dashboard login gagal | `NEXT_PUBLIC_SUPABASE_*` tidak diset saat build | Set variable build, deploy ulang |
+| Peta memakai mode embed | `GOOGLE_MAPS_API_KEY` kosong/ditolak | Set key, batasi domain, redeploy |
+| ESP32 gagal HTTPS | URL/API key salah atau waktu TLS belum sinkron | Cek Serial Monitor `[NETCHECK]`, samakan key |
+| Riwayat hilang saat redeploy | Tidak ada volume | Mount `/data`, set `VEST_RIWAYAT_PATH` |
+| Deteksi lambat | CPU Railway terbatas | Turunkan `VEST_IMGSZ` (mis. 416), pantau log |
+| Data Supabase tidak muncul | Tabel/RLS/migrasi belum diterapkan | Jalankan migrasi, cek `/status` |
+
+## Menjalankan lokal
 
 ### Prasyarat
 
-- Python 3.10 atau lebih baru dan virtual environment `.venv`.
-- Dependensi utama: `ultralytics`, `fastapi`, `uvicorn`, `pillow`, `numpy`, `python-multipart`.
-- Untuk suara: `pip install -r library/suara-natural-ai/requirements_pemutar.txt`, membutuhkan `pygame-ce`.
-- Untuk tunnel publik: `cloudflared` tersedia di `PATH`, terpasang pada lokasi
-  standar Windows `C:\Program Files (x86)\cloudflared\cloudflared.exe`, atau
-  ditetapkan melalui `CLOUDFLARED_EXECUTABLE`.
+- Python 3.10 atau lebih baru; repo diuji dengan Python 3.12.10.
+- Virtual environment `.venv`.
+- Dependensi: `pip install -r requirements.txt`.
+- Untuk audio: `pip install -r library/suara-natural-ai/requirements_pemutar.txt` (membutuhkan `pygame-ce`).
 - Node.js dan npm untuk membangun dashboard React.
+- Dataset dengan path yang sesuai di `dataset_gabungan.yaml`.
+- Untuk firmware: Arduino IDE, package **esp32 by Espressif Systems** 4.0.0+, library **WiFiManager**, board **ESP32S3 Dev Module**, PSRAM **OPI PSRAM**.
 
 ### Training
 
@@ -585,6 +1047,7 @@ Pipeline akan:
 3. Menjalankan quality gate per kelas.
 4. Melakukan evaluasi akhir dan menulis laporan ke folder run.
 5. Menghapus run lama serta checkpoint duplikat setelah training selesai.
+6. Tidak mengganti `models/best.pt` otomatis jika quality gate gagal.
 
 ### Evaluasi
 
@@ -594,9 +1057,19 @@ python start_eval.py --dataset dataset_gabungan.yaml --split val
 
 Opsi lain: `--model`, `--out`, `--imgsz`, `--batch`, `--conf`, `--contoh`, `--n-kecepatan`, dan `--device`.
 
-### Server API dan dashboard
+### Build dashboard dan jalankan API
 
-Isi `.env` terlebih dahulu. Contoh kunci yang dipakai:
+```powershell
+cd web/react
+npm ci
+npm run build
+cd ..\..
+uvicorn server_rest_api:app --host 0.0.0.0 --port 8080
+```
+
+Untuk lokal tanpa tunnel, cara di atas adalah yang disarankan. `server.py` adalah entry point lokal lama yang juga menyiapkan discovery UDP dan tunnel pengujian; jalur produksi tetap Railway dan container menjalankan `uvicorn server_rest_api:app` langsung.
+
+Isi `.env` root terlebih dahulu:
 
 ```text
 VEST_API_KEY=<kunci acak minimal 32 karakter>
@@ -615,82 +1088,20 @@ SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
 VEST_SUPABASE_DEVICE_ID=<uuid-perangkat-di-tabel-devices>
 ```
 
-Jalankan:
+Build dashboard perlu diperbarui dengan `npm run build` setiap kali source React berubah. Dokumentasi interaktif tersedia di `/docs`.
 
-```powershell
-cd web/react
-npm install
-npm run build
-cd ..\..
-python server.py
-```
+### Menghubungkan ESP32-S3 ke server
 
-Dengan `VEST_HOST=0.0.0.0`, server dapat menerima koneksi lokal dan memulai Cloudflare Quick Tunnel. URL `trycloudflare.com` langsung menampilkan dashboard React, sedangkan `/app` tetap menjadi alias. Dokumentasi interaktif tersedia di `/docs`. URL publik terakhir juga disimpan di `data/runtime/public_url.txt`. ESP32-S3 memakai domain Railway sebagai default; untuk server lokal, set `VEST_USE_LAN_DISCOVERY=1` agar memakai discovery UDP port `4211` pada LAN yang sama. Build dashboard perlu diperbarui dengan `npm run build` setiap kali source React berubah.
+1. Salin `hardware/arduino/esp32_s3/secrets.h.example` menjadi `secrets.h`.
+2. Isi `VEST_API_KEY` dengan key yang sama seperti server/Railway.
+3. Biarkan `VEST_SERVER_URL` kosong untuk memakai `DEFAULT_RAILWAY_URL`, atau isi URL lain.
+4. Untuk LAN, set `VEST_USE_LAN_DISCOVERY=1` dan pastikan server serta ESP32 berada di jaringan yang sama.
+5. Flash firmware, lalu buka Serial Monitor 115200 baud.
+6. Jika Wi-Fi belum ada, hubungkan ponsel ke `VestCare-ESP32S3` (sandi `12345678`) dan isi SSID/sandi melalui portal.
+7. Pastikan Serial Monitor menunjukkan HTTPS `/status` 200 dan telemetri terkirim.
+8. Buka dashboard, cek status online, jarak, dan posisi GPS.
 
-Request GET dan POST dicatat di terminal dengan metode, path, status HTTP, dan waktu proses, misalnya `[HTTP] GET /status -> 200 (3.2 ms)`. Query string, header, dan isi request tidak dicatat.
-
-### Deploy Railway
-
-Dockerfile repository membangun dashboard React dan API FastAPI dalam satu
-service. `railway.json` menetapkan builder Dockerfile, health check `/readyz`,
-restart on failure, dan satu replica. `.railwayignore` mencegah virtualenv,
-dataset, dan hasil training ikut diunggah, tetapi tetap menyertakan
-`models/best.pt` dan pustaka audio. Peringatan deprecation untuk `railway.json`
-tidak menggagalkan deploy; migrasikan setelah service dibuat melalui perintah
-Railway CLI. Railway mempertahankan domain service saat restart/redeploy biasa;
-domain berubah hanya jika domain/service dihapus atau diganti. Sketch ESP32-S3
-memakai domain ini sebagai default; `VEST_SERVER_URL` di
-`hardware/arduino/esp32_s3/secrets.h` hanya perlu diisi untuk override.
-Alamat API tidak dapat ditemukan dari API key saja. Railway menyediakan
-`RAILWAY_PUBLIC_DOMAIN` setelah domain publik dibuat; API memakai nilai itu
-otomatis untuk balasan discovery jika `VEST_PUBLIC_URL` tidak diatur.
-
-1. Pastikan project dan environment terhubung (`railway link`), lalu jalankan
-   `railway up` untuk mengunggah dan deploy kode lokal. File `.railwayignore`
-   mengecualikan virtualenv dan data training yang tidak diperlukan.
-2. Pada service, buka **Settings → Networking → Public Networking** dan pilih
-   **Generate Domain** bila belum ada. Atur `VEST_API_KEY` sebagai Railway
-   Variable; nilainya harus sama dengan key di `secrets.h` ESP32.
-3. Set `VEST_MODEL_PATH=models/best.pt`. Atur `SUPABASE_URL` dan
-   `SUPABASE_SERVICE_ROLE_KEY` hanya jika Supabase dipakai.
-4. Untuk mempertahankan riwayat lokal, tambahkan Railway Volume pada `/data` dan
-   set `VEST_RIWAYAT_PATH=/data/riwayat.jsonl`. Tanpa volume, riwayat lokal
-   hilang saat container diganti; data live kamera/telemetri disimpan di memori.
-   Riwayat aktif dibatasi otomatis ke sekitar 5 MB (4.000 entri terbaru) dan
-   file sebelumnya disalin ke `riwayat.jsonl.1`.
-   Pustaka suara Ardi pada `data/runtime/audio/cache_ardi` disertakan dalam
-   image melalui `.dockerignore`; pastikan folder itu ada saat build (atau sudah
-   di-commit). Jika memakai volume tersendiri, set
-   `VEST_SUARA_FOLDER=/data/audio`; tanpa klip, inferensi dan kamera tetap jalan
-   tetapi audio dashboard dinonaktifkan dengan pesan yang jelas.
-5. Setelah service tersedia, jalankan `railway domain` untuk membuat domain
-   publik. Salin URL yang tampil (mis.
-   `https://nama-service.up.railway.app`) ke `VEST_SERVER_URL` bila ingin
-   override default, lalu build dan flash firmware. Domain service
-   tidak berubah saat redeploy biasa; jika domain dibuat ulang atau service
-   diganti, perbarui nilai firmware. Dashboard dan API menggunakan domain yang
-   sama, sehingga browser memakai cookie sesi same-origin.
-
-Di Railway Service Settings, atur health check path ke `/readyz`; service hanya
-siap ketika model, API key, dan hasil build dashboard tersedia. Pertahankan satu
-replica karena frame kamera dan telemetri live berada di memori proses. Gunakan
-resource CPU/RAM yang cukup untuk PyTorch CPU; latensi inferensi dan kestabilan
-jaringan menentukan kelancaran realtime, jadi tidak dapat dijamin nol gangguan.
-Untuk CPU kecil, turunkan `VEST_IMGSZ` (misalnya 416) agar hasil deteksi lebih
-cepat muncul; naikkan lagi bila akurasi lebih penting.
-Untuk menjalankan lokal, tetap gunakan `python server.py`; perintah itu yang
-menyalakan Cloudflare Quick Tunnel dan discovery UDP LAN.
-
-Peta dashboard memakai Google Maps. Untuk Railway, tambahkan `GOOGLE_MAPS_API_KEY` pada **Service → Variables** dengan key Google Maps JavaScript API yang dibatasi ke domain dashboard dan API Maps JavaScript. Restart atau deploy ulang service agar konfigurasi server terbaca melalui `/config`; build ulang frontend tidak diperlukan. Untuk server lokal, pastikan variabel tersedia pada environment proses server. Bila key kosong atau ditolak, dashboard otomatis memakai Google Maps mode embed agar lokasi perangkat tetap terlihat.
-
-### Menghubungkan Wemos ke server dan dashboard
-
-1. Sambungkan komputer/server dan Wemos ke jaringan Wi-Fi yang sama. Jalankan server dengan `VEST_HOST=0.0.0.0` dan port yang sesuai.
-2. Saat portal konfigurasi `Wemos_Setup` muncul, isi Wi-Fi saja. Wemos memakai URL tetap di `hardware/arduino/wemos/wemos.ino`; jika URL Quick Tunnel berubah, perbarui `SERVER_URL` ke URL dari `data/runtime/public_url.txt` dan flash ulang firmware. ESP32-S3 memakai domain Railway yang ditetapkan pada sketch/secrets header (bukan melalui portal); discovery UDP hanya untuk mode LAN lokal.
-3. Endpoint `POST /api/telemetri` menerima kiriman publik tanpa `VEST_API_KEY` agar Wemos tidak memerlukan konfigurasi key. Jangan gunakan endpoint ini untuk data sensitif: siapa pun yang mengetahui URL server dapat mengirim telemetri palsu. Endpoint API lain tetap mengikuti autentikasi server.
-4. Wemos mengirim jarak ultrasonik dan GPS melalui HTTPS ke `/api/telemetri` setiap 5 detik. Sertifikat TLS diverifikasi dan waktu sertifikat disinkronkan lewat NTP; jangan matikan verifikasi TLS. Dashboard pada URL Cloudflare yang sama akan menampilkan status perangkat dan lokasi. Periksa Serial Monitor 115200 baud untuk status HTTP.
-
-Wemos hanya menyimpan kredensial Wi-Fi melalui WiFiManager. Firmware memverifikasi HTTPS menggunakan trust anchor ISRG Root X2. Jika koneksi gagal, periksa detail `[TLS] BearSSL` dan waktu perangkat di Serial Monitor; jangan menonaktifkan verifikasi sertifikat.
+Endpoint `POST /api/telemetri` menerima kiriman publik tanpa `VEST_API_KEY` agar perangkat tidak memerlukan konfigurasi key. Jangan gunakan endpoint ini untuk data sensitif.
 
 ### Deteksi dari kamera tanpa dashboard
 
@@ -700,41 +1111,57 @@ python library/suara-natural-ai/jalankan_fuzzy.py --sumber 0
 
 Gunakan `--sumber` untuk indeks kamera atau path video. Contoh integrasi tanpa kamera tersedia di `library/suara-natural-ai/contoh_integrasi.py`.
 
+## Struktur proyek
+
+| Path | Fungsi |
+|---|---|
+| `server.py` | Entry point lokal lama; API, discovery LAN, dan tunnel pengujian. Bukan jalur deploy Railway |
+| `server_rest_api.py` | Aplikasi FastAPI, endpoint, engine YOLO, fuzzy, suara, riwayat, Supabase |
+| `fuzzysugeno.py` | Fuzzy Sugeno, `analisis_hasil`, `PelacakGerak`, `IngatanHalangan`, penanda ragu |
+| `start_train.py` | Entry point pipeline training |
+| `train_semua.py` | Pipeline training 5 kelas, quality gate, evaluasi akhir, pembersihan run lama |
+| `start_eval.py` | Evaluasi model per kelas dan per varian dataset |
+| `split_dataset.py` | Pembagian dataset berbasis grup dan pencarian seed |
+| `dataset_gabungan.yaml` | Konfigurasi dataset gabungan |
+| `models/best.pt` | Bobot aktif yang dipakai server |
+| `models/kandidat_20261116_071306.pt` | Bobot kandidat, bukan bobot aktif |
+| `web/react/` | Dashboard React, build disajikan dari `web/react/dist/` |
+| `web/react/src/useVestData.js` | Pembacaan `/dashboard/data`, SSE, dan fallback `/riwayat` |
+| `web/react/src/components/CameraCapture.jsx` | Kamera, pengiriman frame, kotak objek, audio, buzzer |
+| `web/react/src/components/GpsMap.jsx` | Peta Google Maps realtime, marker objek, jejak GPS |
+| `web/react/src/AuthGate.jsx` | Gerbang login Supabase Auth |
+| `library/suara-natural-ai/` | Pustaka klip suara, perakit kalimat, contoh integrasi |
+| `data/results/run_final/` | Artefak training dan evaluasi yang dipublikasikan |
+| `data/results/logs/` | Log training mentah |
+| `data/datasets/` | Dataset sumber, utama, dan penunjang (tidak di-commit penuh) |
+| `data/runtime/` | Riwayat server, URL publik, cache audio |
+| `hardware/arduino/esp32_s3/` | Firmware ESP32-S3, README hardware, contoh `secrets.h` |
+| `supabase/migrations/` | Skema dan migrasi Supabase |
+| `Dockerfile` | Build multi-stage dashboard + API untuk Railway |
+| `railway.json` | Builder, health check, restart policy, replica |
+| `.railway/railway.ts` | Infrastructure-as-code service Railway |
+| `.railwayignore` | File yang tidak diunggah ke Railway |
+| `Procfile` | Alternatif start command platform |
+
 ## Artefak dan log
 
-| Artefak | Path |
-|---|---|
-| Log training root | `data/results/logs/training_semua_20261107_154452_851599.log` |
-| Log run | `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/training.log` |
-| Log mentah | `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/raw/training.log` |
-| Laporan training | `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/training_report.txt` |
-| Laporan JSON | `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/training_report.json` |
-| Metrik per kelas | `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/val_class_metrics.csv` |
-| Evaluasi akhir | `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/` |
-| Log evaluasi | `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/evaluation_20261108_000253.log` |
-| Ringkasan akurasi | `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/laporan_akurasi.txt` |
-| Kecepatan | `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/kecepatan.json` |
-| Bobot terbaik | `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/weights/best.pt` |
+| Artefak | Path | Ukuran |
+|---|---|---:|
+| Ringkasan run | `data/results/run_final/README.md` | 7.134 byte |
+| Argumen run | `data/results/run_final/args.yaml` | 1.889 byte |
+| Metrik per epoch | `data/results/run_final/results.csv` | 18.044 byte |
+| Grafik training | `data/results/run_final/results.png` | 489.387 byte |
+| Laporan training JSON | `data/results/run_final/reports/training_report.json` | 11.019 byte |
+| Ringkasan evaluasi | `data/results/run_final/evaluation/final/ringkasan_test.json` | 7.282 byte |
+| Laporan akurasi teks | `data/results/run_final/evaluation/final/laporan_akurasi.txt` | 1.624 byte |
+| Grafik ringkasan total | `data/results/run_final/evaluation/final/grafik/1_ringkasan_total.png` | 26.947 byte |
+| Grafik per kelas | `data/results/run_final/evaluation/final/grafik/2_per_kelas.png` | 61.443 byte |
+| Grafik tingkat gambar | `data/results/run_final/evaluation/final/grafik/4_tingkat_gambar.png` | 29.728 byte |
+| Log training mentah | `data/results/logs/training_semua_20261107_154452_851599.log` | 12.800.220 byte |
+| Bobot aktif | `models/best.pt` | 6.592.861 byte |
+| Bobot kandidat | `models/kandidat_20261116_071306.pt` | 6.633.713 byte |
 
-### Ukuran artefak mentah
-
-| File | Ukuran byte | Ukuran perkiraan |
-|---|---:|---:|
-| `data/results/logs/training_semua_20261107_154452_851599.log` | 12.800.220 | 12,2 MiB |
-| `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/training.log` | 12.800.220 | 12,2 MiB |
-| `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/raw/training.log` | 12.800.220 | 12,2 MiB |
-| `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/results.csv` | 18.044 | 17,6 KiB |
-| `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/raw/results.csv` | 18.044 | 17,6 KiB |
-| `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/training_report.json` | 11.019 | 10,8 KiB |
-| `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/training_report.txt` | 1.911 | 1,9 KiB |
-| `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/reports/val_class_metrics.csv` | 906 | 0,9 KiB |
-| `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/evaluation_20261108_000253.log` | 33.212 | 32,4 KiB |
-| `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/ringkasan_test.json` | 7.282 | 7,1 KiB |
-| `data/results/runs/segment/runs/semua_kelas_yolo26n_20261107_154452/evaluation/final/kecepatan.json` | 191 | 0,2 KiB |
-
-### Contoh baris log mentah
-
-Baris pertama dan terakhir `raw/results.csv`:
+Contoh baris pertama dan terakhir `results.csv`:
 
 ```csv
 epoch,time,train/box_loss,train/seg_loss,train/cls_loss,train/l1_loss,train/sem_loss,metrics/precision(B),metrics/recall(B),metrics/mAP50(B),metrics/mAP50-95(B),metrics/precision(M),metrics/recall(M),metrics/mAP50(M),metrics/mAP50-95(M),val/box_loss,val/seg_loss,val/cls_loss,val/l1_loss,val/sem_loss,lr/pg0,lr/pg1,lr/pg2
@@ -752,10 +1179,18 @@ Starting training for 100 epochs...
 100 epochs completed in 8.285 hours.
 ```
 
-## Catatan
+## Catatan dan batasan
 
-- `dataset_gabungan.yaml` memakai path absolut `C:/dataset vestcare (rompi-cerdas)`. Sesuaikan path bila repo dipindahkan ke mesin lain.
-- File `.env` tidak di-commit. Jangan menuliskan kunci API asli ke README atau file yang di-commit.
-- Quality gate 98% belum terpenuhi. Gunakan hasil ini sebagai baseline untuk perbaikan dataset, anotasi, dan training berikutnya.
-- Repo ini tidak memakai Git LFS. Bobot dan artefak run disimpan langsung agar hasil training dapat direproduksi dan diaudit.
-- Tabel Supabase harus dibuat terlebih dahulu sesuai kolom pada bagian skema. Tanpa tabel yang sesuai, server tetap berjalan, tetapi sinkronisasi akan gagal dan statusnya terlihat pada `/status` serta dialog kamera.
+- **Quality gate belum lulus.** Ambang 98% untuk empat metrik di setiap kelas belum terpenuhi. Gunakan hasil ini sebagai baseline untuk perbaikan dataset, anotasi, dan training berikutnya.
+- **Tidak ada split test independen.** Semua angka evaluasi berasal dari split validasi 312 gambar. Jangan menyebutnya sebagai akurasi test.
+- **Kecepatan 17,21 ms adalah GPU.** Railway memakai PyTorch CPU; latency produksi lebih tinggi. Ukur ulang di Railway dan turunkan `VEST_IMGSZ` bila perlu.
+- **Satu perangkat, satu replica.** Server memakai satu `device_id` Supabase dan state live di memori. Untuk multi-perangkat, perlu perubahan skema dan routing.
+- **Supabase opsional.** Tanpa Supabase, riwayat lokal tetap berjalan; dashboard memakai fallback. Tanpa volume Railway, riwayat lokal hilang saat redeploy.
+- **Telemetri publik.** `/api/telemetri` tidak memakai API key; risiko spoofing harus diterima atau ditambahkan pengamanan.
+- **Audio browser membutuhkan interaksi.** Autoplay diblokir browser sampai pengguna mengklik halaman.
+- **Tidak ada motor getar.** `getar` hanya field JSON lama dan nama varian gambar uji. Peringatan fisik memakai audio/TWS dan buzzer.
+- **Path dataset absolut.** `dataset_gabungan.yaml` memakai `C:/dataset vestcare (rompi-cerdas)`. Sesuaikan path bila repo dipindahkan.
+- **File rahasia tidak di-commit.** `.env`, `secrets.h`, dan service-role key tidak boleh masuk repository.
+- **Repo tidak memakai Git LFS.** `models/best.pt` dan artefak run disimpan langsung agar hasil dapat direproduksi dan diaudit.
+- **Migrasi Supabase wajib diterapkan.** Tanpa tabel/kolom yang sesuai, API tetap berjalan tetapi sinkronisasi gagal dan statusnya terlihat di `/status`.
+- **Google OAuth memakai domain produksi.** Jika domain Railway berubah, perbarui `LoginPage.jsx`, Supabase Redirect URLs, dan pembatasan Google Maps key.
