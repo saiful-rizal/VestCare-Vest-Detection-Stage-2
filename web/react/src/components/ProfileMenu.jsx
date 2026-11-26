@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import avatar from "../assets/img/avatar.png";
+import Icon from "./Icon";
 import { COLOR, fmt, profile } from "../data";
 
 export default function ProfileMenu({ device, position, telemetry, telemetryOnline }) {
@@ -29,18 +30,18 @@ export default function ProfileMenu({ device, position, telemetry, telemetryOnli
         : "-";
 
   return (
-    <li className="relative flex items-center" ref={ref}>
+    <div style={{ position: "relative" }} ref={ref}>
       <button
         type="button"
         className="vc-profile-btn"
         aria-haspopup="true"
         aria-expanded={open}
         aria-controls="profileMenu"
+        aria-label="Profil dan detail perangkat"
         onClick={() => setOpen((o) => !o)}
       >
-        <img className="vc-avatar" src={avatar} alt="Foto profil" />
-        <span className="hidden sm:inline">Profil</span>
-        <span className="vc-caret"></span>
+        <img className="vc-avatar" src={avatar} alt="" />
+        <Icon name="chevronDown" size={16} />
       </button>
 
       {open && (
@@ -53,7 +54,7 @@ export default function ProfileMenu({ device, position, telemetry, telemetryOnli
           <div className="vc-row">
             <span>Status rompi</span>
             <span>
-              <span className="vc-dot" style={{ background: online ? COLOR.Rendah : "#9a8b88" }}></span>
+              <span className="vc-dot" style={{ display: "inline-block", marginRight: 6, background: online ? COLOR.Rendah : "#8a949e" }} />
               {online ? "Online" : "Offline"}
             </span>
           </div>
@@ -68,6 +69,6 @@ export default function ProfileMenu({ device, position, telemetry, telemetryOnli
           <div className="vc-row"><span>Lokasi terakhir</span><span>{position ? `${position.lat.toFixed(5)}, ${position.lng.toFixed(5)}` : "Belum tersedia"}</span></div>
         </div>
       )}
-    </li>
+    </div>
   );
 }

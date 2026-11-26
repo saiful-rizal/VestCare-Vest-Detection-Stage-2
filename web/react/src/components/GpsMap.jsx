@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { COLOR, DEFAULT_MAP_CONFIG } from "../data";
 
-const MAP_HEIGHT = 380;
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Icon from "./Icon";
+import { COLOR, DEFAULT_MAP_CONFIG, URGENCY_TONE, levelLabel } from "../data";
+
+const MAP_HEIGHT = 460;
 const MAX_DETECTION_MARKERS = 12;
 const DETECTION_COLORS = {
   Tinggi: COLOR.Tinggi,
@@ -160,10 +162,12 @@ function GoogleMapCanvas({
   defaultCenter,
   defaultZoom,
   follow,
+  tilt3d,
   onManualMove,
   onError,
 }) {
   const containerRef = useRef(null);
+  const tilt3dRef = useRef(tilt3d);
   const mapRef = useRef(null);
   const markerRef = useRef(null);
   const circleRef = useRef(null);
@@ -177,6 +181,7 @@ function GoogleMapCanvas({
   const onManualMoveRef = useRef(onManualMove);
   const [ready, setReady] = useState(false);
 
+  useEffect(() => { tilt3dRef.current = tilt3d; }, [tilt3d]);
   useEffect(() => { positionRef.current = position; }, [position]);
   useEffect(() => { telemetryRef.current = telemetry; }, [telemetry]);
   useEffect(() => { onErrorRef.current = onError; }, [onError]);
@@ -200,11 +205,17 @@ function GoogleMapCanvas({
         const map = new maps.Map(containerRef.current, {
           center: { lat: center.lat, lng: center.lng },
           zoom: defaultZoom,
-          mapTypeControl: false,
+          mapTypeControl: true,
           streetViewControl: false,
           fullscreenControl: true,
           gestureHandling: "greedy",
           clickableIcons: false,
+          // Peta vektor: mendukung kemiringan (3D) dan rotasi. DEMO_MAP_ID adalah Map ID
+          // uji coba dari Google; ganti dengan Map ID milik sendiri untuk produksi.
+          mapId: "DEMO_MAP_ID",
+          tilt: tilt3dRef.current ? 45 : 0,
+          heading: 0,
+          rotateControl: true,
         });
         mapRef.current = map;
 
@@ -339,7 +350,15 @@ function GoogleMapCanvas({
     };
   }, [ready, detections, position]);
 
-  return <div ref={containerRef} style={{ height: MAP_HEIGHT, width: "100%", borderRadius: 12 }} />;
+  // Beralih 2D/3D tanpa membuat ulang peta.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!ready || !map) return;
+    map.setTilt(tilt3d ? 45 : 0);
+    if (!tilt3d) map.setHeading(0);
+  }, [ready, tilt3d]);
+
+  return <div ref={containerRef} style={{ height: MAP_HEIGHT, width: "100%" }} />;
 }
 
 function GoogleMapEmbed({ position, defaultCenter, zoom }) {
@@ -349,54 +368,89 @@ function GoogleMapEmbed({ position, defaultCenter, zoom }) {
   const src = `https://maps.google.com/maps?q=${center.lat},${center.lng}&z=${zoom}&hl=id&t=m&output=embed`;
 
   return (
-    <div className="relative overflow-hidden rounded-xl" style={{ height: MAP_HEIGHT }}>
+    <div style={{ position: "relative", height: MAP_HEIGHT }}>
       <iframe
         key={key}
         title="Google Maps - posisi rompi VestCare"
         src={src}
-        className="h-full w-full border-0"
+        style={{ width: "100%", height: "100%", border: 0 }}
         loading="lazy"
         referrerPolicy="no-referrer-when-downgrade"
         allowFullScreen
       />
-      <span className="pointer-events-none absolute left-3 top-3 rounded-full bg-white/90 px-3 py-1 text-[11px] font-semibold text-slate-700 shadow">
-        Google Maps · mode embed
-      </span>
+      <span className="vc-map-badge">Peta dasar</span>
     </div>
   );
 }
 
 function StatusPill({ tone, children }) {
-  const tones = {
-    ok: "bg-emerald-50 text-emerald-700 border-emerald-200",
-    warn: "bg-amber-50 text-amber-700 border-amber-200",
-    bad: "bg-red-50 text-red-700 border-red-200",
-    idle: "bg-slate-50 text-slate-500 border-slate-200",
-  };
+  return <span className={`vc-pill vc-tone-${tone}`}>{children}</span>;
+}
+
+function Metric({ label, value, sub, tone, icon }) {
   return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${tones[tone] || tones.idle}`}>
-      <span className="h-1.5 w-1.5 rounded-full bg-current" />
-      {children}
-    </span>
+    <div className={`vc-metric ${tone ? `vc-tone-${tone}` : ""}`}>
+      <p className="vc-metric-label"><Icon name={icon} size={14} />{label}</p>
+      <p className="vc-metric-value" data-tone={tone || undefined}>{value}</p>
+      {sub && <p className="vc-metric-sub">{sub}</p>}
+    </div>
   );
 }
 
-function Metric({ label, value, sub, color, icon }) {
+function CopyLine({ text }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setCopied(false);
+    }
+  };
   return (
-    <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2">
-      <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-        {icon && <i className={`ni ${icon} text-xs`} style={{ color: color || "#660f08" }} />}
-        {label}
-      </div>
-      <div className="mt-0.5 text-base font-bold" style={{ color: color || "#2a1412" }}>{value}</div>
-      {sub && <div className="text-[10px] leading-tight text-slate-500">{sub}</div>}
+    <div className="vc-copyline">
+      <code>{text}</code>
+      <button type="button" onClick={copy}>
+        <Icon name={copied ? "check" : "copy"} size={14} />
+        {copied ? "Tersalin" : "Salin"}
+      </button>
     </div>
+  );
+}
+
+// Panduan singkat mengaktifkan peta realtime, tampil hanya saat kunci belum diisi.
+function ApiKeyNotice() {
+  return (
+    <details className="vc-notice">
+      <summary className="vc-notice-summary">
+        <span className="vc-seg-chip vc-tone-idle"><Icon name="key" size={16} /></span>
+        <span style={{ flex: 1, minWidth: 0 }}>
+          <span className="vc-notice-title" style={{ display: "block" }}>Peta masih mode dasar</span>
+          <span className="vc-notice-text" style={{ display: "block" }}>
+            Tambahkan kunci Google Maps agar marker rompi, jejak perjalanan, objek terdeteksi, dan mode 3D tampil di peta.
+          </span>
+        </span>
+        <span className="vc-notice-toggle">Cara mengaktifkan <Icon name="chevronDown" size={14} /></span>
+      </summary>
+      <ol className="vc-steps">
+        <li>
+          Di Google Cloud Console, aktifkan <strong>Maps JavaScript API</strong>, lalu buat <strong>API key</strong> di menu Credentials.
+        </li>
+        <li>
+          Buka file <code>.env</code> di folder yang sama dengan <code>server_rest_api.py</code>, lalu tambahkan baris ini:
+          <CopyLine text="GOOGLE_MAPS_API_KEY=kunci_anda" />
+        </li>
+        <li>Simpan file, lalu jalankan ulang server. Tidak perlu build ulang dashboard.</li>
+      </ol>
+    </details>
   );
 }
 
 export default function GpsMap({ position, detections = [], telemetry, trail = [], mapConfig }) {
   const config = mapConfig || DEFAULT_MAP_CONFIG;
   const [follow, setFollow] = useState(true);
+  const [tilt3d, setTilt3d] = useState(true);
   const [mapError, setMapError] = useState("");
   const [now, setNow] = useState(Date.now());
 
@@ -412,17 +466,17 @@ export default function GpsMap({ position, detections = [], telemetry, trail = [
     setFollow(true);
   }, []);
 
-  const gpsTone = telemetry?.fix ? "ok" : telemetry?.terbaca ? "warn" : telemetry?.updatedAt ? "bad" : "idle";
+  const gpsTone = telemetry?.fix ? "safe" : telemetry?.terbaca ? "warn" : telemetry?.updatedAt ? "danger" : "idle";
   const gpsLabel = telemetry?.fix
     ? "GPS fix"
     : telemetry?.terbaca
       ? "Mencari satelit"
       : telemetry?.updatedAt
         ? "GPS tidak terbaca"
-        : "Menunggu telemetri";
+        : "Menunggu GPS";
   const hasTelemetry = Boolean(telemetry?.updatedAt || telemetry?.fix || telemetry?.terbaca);
-  const wemosTone = telemetry?.online ? "ok" : hasTelemetry ? "bad" : "idle";
-  const wemosLabel = telemetry?.online ? "Wemos online" : hasTelemetry ? "Wemos offline" : "Wemos belum kirim";
+  const deviceTone = telemetry?.online ? "safe" : hasTelemetry ? "danger" : "idle";
+  const deviceLabel = telemetry?.online ? "Rompi online" : hasTelemetry ? "Rompi offline" : "Rompi belum kirim data";
 
   const ageSeconds = telemetry?.updatedAt
     ? Math.max(0, Math.round((now - telemetry.updatedAt) / 1000))
@@ -434,14 +488,7 @@ export default function GpsMap({ position, detections = [], telemetry, trail = [
       : `${ageSeconds} detik lalu`;
 
   const distance = telemetry?.jarak;
-  const distanceColor = distance == null
-    ? "#7a6460"
-    : distance < 1
-      ? COLOR.Tinggi
-      : distance < 2
-        ? COLOR.Sedang
-        : COLOR.Rendah;
-  const distancePercent = distance == null ? 0 : Math.min(100, (distance / 4) * 100);
+  const distanceTone = distance == null ? undefined : distance < 1 ? "danger" : distance < 2 ? "warn" : "safe";
   const hasApproxDetection = detections.some((item) => item.lat == null || item.lng == null);
   const mapsUrl = position
     ? `https://www.google.com/maps/search/?api=1&query=${position.lat},${position.lng}`
@@ -452,181 +499,153 @@ export default function GpsMap({ position, detections = [], telemetry, trail = [
   const useEmbed = !config.apiKey || Boolean(mapError);
 
   return (
-    <div className="w-full max-w-full px-3 mt-0 lg:w-7/12 lg:flex-none">
-      <div className="border-black/12.5 dark:bg-slate-850 dark:shadow-dark-xl shadow-xl relative z-20 flex min-w-0 flex-col break-words rounded-2xl border-0 border-solid bg-white bg-clip-border">
-        <div className="border-black/12.5 mb-0 rounded-t-2xl border-b-0 border-solid p-6 pb-2">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h6 className="mb-1 capitalize dark:text-white">Lokasi GPS realtime</h6>
-              <p className="mb-0 text-sm leading-normal dark:text-white dark:opacity-60">
-                <i className="ni ni-square-pin" style={{ color: "#660f08" }}></i>{" "}
-                <span className="font-semibold">
-                  {position
-                    ? `${position.lat.toFixed(6)}, ${position.lng.toFixed(6)}${position.updated ? ` · ${position.updated}` : ""}`
-                    : hasTelemetry
-                      ? "Menunggu GPS fix dari Wemos"
-                      : "Menunggu data Wemos"}
-                </span>
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              <StatusPill tone={gpsTone}>{gpsLabel}</StatusPill>
-              <StatusPill tone={wemosTone}>{wemosLabel}</StatusPill>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex-auto p-4 pt-2">
-          <div className="relative overflow-hidden rounded-xl bg-slate-100">
-            {useEmbed ? (
-              <GoogleMapEmbed
-                position={position}
-                defaultCenter={config.center}
-                zoom={config.zoom}
-              />
+    <section className="vc-panel" id="peta" aria-labelledby="peta-title">
+      <div className="vc-panel-head">
+        <div>
+          <h2 className="vc-panel-title" id="peta-title">Lokasi rompi</h2>
+          <p className="vc-coords">
+            <Icon name="pin" size={15} />
+            {position ? (
+              <>
+                <strong>{position.lat.toFixed(6)}, {position.lng.toFixed(6)}</strong>
+                {position.updated ? <span>· {position.updated}</span> : null}
+              </>
             ) : (
-              <GoogleMapCanvas
-                apiKey={config.apiKey}
-                position={position}
-                telemetry={telemetry}
-                detections={detections}
-                trail={trail}
-                defaultCenter={config.center}
-                defaultZoom={config.zoom}
-                follow={follow}
-                onManualMove={() => setFollow(false)}
-                onError={handleMapError}
-              />
+              <span>{hasTelemetry ? "Menunggu GPS mendapat sinyal satelit" : "Menunggu data dari rompi"}</span>
             )}
+          </p>
+        </div>
+        <div className="vc-pills">
+          <StatusPill tone={gpsTone}>{gpsLabel}</StatusPill>
+          <StatusPill tone={deviceTone}>{deviceLabel}</StatusPill>
+        </div>
+      </div>
 
-            {!position && (
-              <div className="pointer-events-none absolute inset-x-3 bottom-3 rounded-lg bg-white/95 px-3 py-2 text-center text-xs font-semibold text-slate-600 shadow">
-                Peta menunggu koordinat valid dari GPS Wemos.
-              </div>
-            )}
+      <div className="vc-map-wrap">
+        {useEmbed ? (
+          <GoogleMapEmbed
+            position={position}
+            defaultCenter={config.center}
+            zoom={config.zoom}
+          />
+        ) : (
+          <GoogleMapCanvas
+            apiKey={config.apiKey}
+            position={position}
+            telemetry={telemetry}
+            detections={detections}
+            trail={trail}
+            defaultCenter={config.center}
+            defaultZoom={config.zoom}
+            follow={follow}
+            tilt3d={tilt3d}
+            onManualMove={() => setFollow(false)}
+            onError={handleMapError}
+          />
+        )}
 
-            {!useEmbed && !follow && (
-              <button
-                type="button"
-                onClick={() => setFollow(true)}
-                className="absolute right-3 top-3 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-[#660f08] shadow hover:bg-slate-50"
-              >
+        {!position && (
+          <div className="vc-map-wait" role="status">Menunggu koordinat GPS rompi</div>
+        )}
+
+        {!useEmbed && (
+          <div className="vc-map-tools">
+            <button type="button" onClick={() => setTilt3d((value) => !value)} className="vc-map-follow" aria-pressed={tilt3d}>
+              <Icon name="mountain" size={14} />
+              {tilt3d ? "Mode 2D" : "Mode 3D"}
+            </button>
+            {!follow && (
+              <button type="button" onClick={() => setFollow(true)} className="vc-map-follow">
+                <Icon name="navigation" size={14} />
                 Ikuti posisi
               </button>
             )}
           </div>
+        )}
+      </div>
 
-          {mapError && (
-            <p className="mt-2 mb-0 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              {mapError} Sementara peta memakai Google Maps mode embed.
-            </p>
-          )}
-          {!config.apiKey && (
-            <p className="mt-2 mb-0 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
-              Tambahkan <code className="font-semibold">GOOGLE_MAPS_API_KEY</code> di <code className="font-semibold">.env</code> server
-              untuk marker realtime, jejak perjalanan, dan marker objek di peta.
-            </p>
-          )}
-
-          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <Metric
-              label="Jarak sensor"
-              value={distance == null ? "-" : `${formatNumber(distance, 2)} m`}
-              sub={distance == null ? (hasTelemetry ? "di luar jangkauan" : "menunggu Wemos") : "ultrasonik depan"}
-              color={distanceColor}
-              icon="ni-sound-wave"
-            />
-            <Metric
-              label="Kecepatan"
-              value={telemetry?.spd == null ? "-" : `${formatNumber(telemetry.spd)} km/jam`}
-              sub="GPS"
-              icon="ni-delivery-fast"
-            />
-            <Metric
-              label="Satelit"
-              value={telemetry?.sat == null ? "-" : telemetry.sat}
-              sub={`HDOP ${telemetry?.hdop == null ? "-" : formatNumber(telemetry.hdop)}`}
-              icon="ni-compass-04"
-            />
-            <Metric
-              label="Ketinggian"
-              value={telemetry?.alt == null ? "-" : `${formatNumber(telemetry.alt)} m`}
-              sub={`Waktu GPS ${telemetry?.waktu || "--:--:--"} WIB`}
-              icon="ni-vector"
-            />
-          </div>
-
-          <div className="mt-3">
-            <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500">
-              <span>Jarak ultrasonik (0–4 m)</span>
-              <span style={{ color: distanceColor }}>{distance == null ? "tidak valid" : `${formatNumber(distance, 2)} m`}</span>
-            </div>
-            <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-200">
-              <div
-                className="h-full rounded-full transition-all"
-                style={{ width: `${distancePercent}%`, background: distanceColor }}
-              />
-            </div>
-          </div>
-
-          {detections.length > 0 && (
-            <div className="mt-3">
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                Deteksi aktif ({detections.length})
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {detections.slice(0, 8).map((detection, index) => {
-                  const color = DETECTION_COLORS[detection.urgency] || COLOR.Sedang;
-                  return (
-                    <span
-                      key={`${detection.object}-${index}`}
-                      className="inline-flex items-center gap-1.5 rounded-full border bg-white px-2.5 py-1 text-[11px] font-semibold"
-                      style={{ borderColor: `${color}55`, color }}
-                    >
-                      <span className="h-1.5 w-1.5 rounded-full" style={{ background: color }} />
-                      {detection.object} · {formatNumber(detection.distance)} m · {detection.level}
-                    </span>
-                  );
-                })}
-              </div>
-              {hasApproxDetection && (
-                <p className="mt-1 mb-0 text-[10px] text-slate-400">
-                  Marker objek di peta adalah perkiraan dari arah (kiri/depan/kanan) dan jarak sensor.
-                </p>
-              )}
-            </div>
-          )}
-
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-            <span className="text-[11px] text-slate-500">
-              Telemetri terakhir: <strong>{ageLabel}</strong>
-              {telemetry?.age != null && telemetry.online === false ? " · data lama" : ""}
-            </span>
-            <div className="flex flex-wrap gap-2">
-              {mapsUrl && (
-                <a
-                  className="inline-flex rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700"
-                  href={mapsUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Buka di Google Maps
-                </a>
-              )}
-              {directionsUrl && (
-                <a
-                  className="inline-flex rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                  href={directionsUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Rute jalan kaki
-                </a>
-              )}
+      {mapError && (
+        <div className="vc-notice" data-tone="warn">
+          <div className="vc-notice-head">
+            <span className="vc-seg-chip vc-tone-warn"><Icon name="alert" size={16} /></span>
+            <div>
+              <p className="vc-notice-title">Kunci Google Maps tidak bisa dipakai</p>
+              <p className="vc-notice-text">{mapError} Sementara, peta memakai tampilan dasar.</p>
             </div>
           </div>
         </div>
+      )}
+      {!config.apiKey && <ApiKeyNotice />}
+
+      <div className="vc-telemetry">
+        <Metric
+          label="Jarak sensor"
+          icon="ruler"
+          value={distance == null ? "-" : `${formatNumber(distance, 2)} m`}
+          sub={distance == null ? (hasTelemetry ? "Di luar jangkauan" : "Menunggu rompi") : "Ultrasonik depan"}
+          tone={distanceTone}
+        />
+        <Metric
+          label="Kecepatan"
+          icon="speed"
+          value={telemetry?.spd == null ? "-" : `${formatNumber(telemetry.spd)} km/jam`}
+          sub="Dari GPS"
+        />
+        <Metric
+          label="Satelit"
+          icon="satellite"
+          value={telemetry?.sat == null ? "-" : telemetry.sat}
+          sub={`HDOP ${telemetry?.hdop == null ? "-" : formatNumber(telemetry.hdop)}`}
+        />
+        <Metric
+          label="Ketinggian"
+          icon="mountain"
+          value={telemetry?.alt == null ? "-" : `${formatNumber(telemetry.alt)} m`}
+          sub={`Waktu GPS ${telemetry?.waktu || "--:--:--"} WIB`}
+        />
       </div>
-    </div>
+
+      {detections.length > 0 && (
+        <div className="vc-detect">
+          <p className="vc-detect-title">Deteksi aktif ({detections.length})</p>
+          <div className="vc-chips">
+            {detections.slice(0, 8).map((detection, index) => (
+              <span
+                key={`${detection.object}-${index}`}
+                className={`vc-chip vc-tone-${URGENCY_TONE[detection.urgency] || "warn"}`}
+              >
+                <span className="vc-dot" />
+                {detection.object} · {formatNumber(detection.distance)} m · {levelLabel(detection)}
+              </span>
+            ))}
+          </div>
+          {hasApproxDetection && (
+            <p className="vc-hint">Posisi objek di peta adalah perkiraan dari arah (kiri/depan/kanan) dan jarak sensor.</p>
+          )}
+        </div>
+      )}
+
+      <div className="vc-map-foot">
+        <span className="vc-map-age">
+          <Icon name="clock" size={14} />
+          Data terakhir <b>{ageLabel}</b>
+          {telemetry?.age != null && telemetry.online === false ? " · data lama" : ""}
+        </span>
+        <div className="vc-actions">
+          {directionsUrl && (
+            <a className="vc-btn vc-btn--ghost" href={directionsUrl} target="_blank" rel="noreferrer">
+              <Icon name="navigation" size={15} />
+              Rute jalan kaki
+            </a>
+          )}
+          {mapsUrl && (
+            <a className="vc-btn vc-btn--primary" href={mapsUrl} target="_blank" rel="noreferrer">
+              Buka di Google Maps
+              <Icon name="external" size={15} />
+            </a>
+          )}
+        </div>
+      </div>
+    </section>
   );
 }

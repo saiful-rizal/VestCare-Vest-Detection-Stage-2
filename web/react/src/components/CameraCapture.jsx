@@ -1,9 +1,15 @@
 import { useEffect, useRef, useState } from "react";
+import Icon from "./Icon";
 import { normalizeDetections } from "../data";
+import { apiFetch, errorMessage } from "../api";
 
 const API_URL = "/deteksi";
-const ESP32_STREAM_URL = import.meta.env.VITE_ESP32_STREAM_URL || "/esp32/stream";
+const ESP32_FRAME_URL = "/api/esp32/frame/latest";
+const ESP32_STATUS_URL = "/api/esp32/status";
+const ESP32_FRAME_POLL_INTERVAL_MS = 150;
+const ESP32_DETECTION_POLL_INTERVAL_MS = 200;
 const REALTIME_DETECTION_INTERVAL_MS = 80;
+const REALTIME_REQUEST_TIMEOUT_MS = 60000;
 const CAPTURE_MAX_WIDTH = 640;
 const CAPTURE_JPEG_QUALITY = 0.85;
 const BOX_SMOOTHING = 0.72;
@@ -98,9 +104,21 @@ function createSilentWavUrl() {
   return URL.createObjectURL(new Blob([buffer], { type: "audio/wav" }));
 }
 
-export default function CameraCapture({ onDetections }) {
+// "12 detik lalu", "3 menit lalu" dari stempel waktu (ms)
+function formatAgo(timestamp) {
+  if (!timestamp) return "";
+  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
+  if (seconds < 5) return "baru saja";
+  if (seconds < 60) return `${seconds} detik lalu`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)} menit lalu`;
+  return `${Math.round(seconds / 3600)} jam lalu`;
+}
+
+export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) {
   const inputRef = useRef(null);
   const videoRef = useRef(null);
+  const esp32ImageRef = useRef(null);
+  const esp32FrameLoadedRef = useRef(false);
   const boxesRef = useRef(null);
   const audioRef = useRef(null);
   const silentAudioUrlRef = useRef(null);
@@ -110,12 +128,20 @@ export default function CameraCapture({ onDetections }) {
   const streamRef = useRef(null);
   const sessionIdRef = useRef(createSessionId());
   const detectingRef = useRef(false);
+  const openingRef = useRef(false);
   const onDetectionsRef = useRef(onDetections);
   const [preview, setPreview] = useState(null);
   const [file, setFile] = useState(null);
   const [liveDetections, setLiveDetections] = useState([]);
+  const [esp32FrameUrl, setEsp32FrameUrl] = useState(null);
+  const [audioOutputName, setAudioOutputName] = useState("");
   const [status, setStatus] = useState("idle");
   const [message, setMessage] = useState("");
+  // Status tampilan saja: apakah gambar stream ESP32 berhasil dimuat.
+  const [streamState, setStreamState] = useState("connecting");
+  useEffect(() => {
+    if (status === "esp32") setStreamState("connecting");
+  }, [status]);
 
   useEffect(() => {
     onDetectionsRef.current = onDetections;
@@ -146,6 +172,11 @@ export default function CameraCapture({ onDetections }) {
       audioRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    if (!esp32FrameUrl) return undefined;
+    return () => URL.revokeObjectURL(esp32FrameUrl);
+  }, [esp32FrameUrl]);
 
   function stopAudio() {
     audioTokenRef.current += 1;
@@ -178,6 +209,30 @@ export default function CameraCapture({ onDetections }) {
       audio.load();
       setMessage("Suara belum diizinkan browser. Aktifkan suara lalu buka kamera kembali.");
       return false;
+    }
+  }
+
+  async function chooseAudioOutput() {
+    const audio = audioRef.current;
+    const mediaDevices = navigator.mediaDevices;
+    if (
+      !audio
+      || typeof audio.setSinkId !== "function"
+      || typeof mediaDevices?.selectAudioOutput !== "function"
+    ) {
+      setMessage("Pasangkan TWS ke perangkat yang membuka dashboard, lalu pilih sebagai output suara perangkat.");
+      return;
+    }
+
+    try {
+      const output = await mediaDevices.selectAudioOutput();
+      await audio.setSinkId(output.deviceId);
+      setAudioOutputName(output.label || "Output TWS");
+      setMessage(`Suara peringatan dialihkan ke ${output.label || "output pilihan"}.`);
+    } catch (error) {
+      setMessage(error instanceof Error
+        ? `Output suara tidak dapat dipilih: ${error.message}`
+        : "Output suara tidak dapat dipilih.");
     }
   }
 
@@ -257,40 +312,244 @@ export default function CameraCapture({ onDetections }) {
     if (status !== "esp32") return undefined;
 
     let active = true;
-    let timer;
+    let timer = null;
+    let lastUpdatedAt = 0;
+    let previousDetections = [];
+    let lastAudioSignature = "";
+    let lastAudioLevel = 0;
+    let lastSpokenAt = 0;
 
-    async function refreshDetections() {
-      try {
-        const response = await fetch("/dashboard/data", {
-          credentials: "same-origin",
-          cache: "no-store",
-          headers: { "ngrok-skip-browser-warning": "1" },
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!active) return;
-        if (!response.ok) throw new Error(payload.detail || `Server mengembalikan ${response.status}.`);
+    function applyLatestDetection(payload) {
+      const updatedAt = Number(payload?.updated_at);
+      const serverAge = Number(payload?.umur_detik);
+      const stale = payload?.online === false
+        || !Number.isFinite(updatedAt)
+        || (Number.isFinite(serverAge) ? serverAge > 30 : Date.now() / 1000 - updatedAt > 30);
 
-        const detections = normalizeDetections(payload);
-        setLiveDetections(detections);
-        onDetectionsRef.current(detections);
+      if (stale) {
+        if (lastUpdatedAt !== 0) {
+          lastUpdatedAt = 0;
+          previousDetections = [];
+          setLiveDetections([]);
+          onDetectionsRef.current([]);
+        }
+        if (audioRef.current?.paused) {
+          setMessage("Menunggu hasil deteksi terbaru dari kamera ESP32...");
+        }
+        return;
+      }
+      if (updatedAt <= lastUpdatedAt || !payload?.data) return;
+
+      const detections = smoothDetectionBoxes(
+        normalizeDetections(payload.data),
+        previousDetections,
+      );
+      previousDetections = detections;
+      lastUpdatedAt = updatedAt;
+      setLiveDetections(detections);
+      onDetectionsRef.current(detections);
+
+      const plan = payload.data.suara;
+      const level = String(plan?.level || "AMAN").toUpperCase();
+      const levelRank = { AMAN: 0, INFO: 1, WASPADA: 2, BAHAYA: 3 }[level] || 0;
+      const signature = `${level}:${plan?.aksi || ""}:${(plan?.segmen || [])
+        .map((segment) => segment.kunci || "")
+        .join("|")}`;
+      const now = Date.now();
+      const audioPaused = audioRef.current?.paused !== false;
+      const escalation = levelRank > lastAudioLevel;
+      const shouldSpeak = levelRank > 0
+        && Array.isArray(plan?.segmen)
+        && plan.segmen.length > 0
+        && (
+          (escalation && now - lastSpokenAt >= 1200)
+          || (signature !== lastAudioSignature && audioPaused && now - lastSpokenAt >= 1800)
+          || (signature === lastAudioSignature && audioPaused && now - lastSpokenAt >= 8000)
+        );
+
+      if (shouldSpeak) {
+        lastAudioSignature = signature;
+        lastAudioLevel = levelRank;
+        lastSpokenAt = now;
+        void playPlan(plan);
+      } else if (levelRank === 0 && now - lastSpokenAt > 5000) {
+        lastAudioSignature = "";
+        lastAudioLevel = 0;
+      }
+
+      if (audioPaused && !shouldSpeak) {
         setMessage(detections.length
           ? `${detections.length} objek terdeteksi dari kamera ESP32.`
           : "Kamera ESP32 aktif. Belum ada objek yang yakin.");
-      } catch (error) {
-        if (active) {
-          setMessage(error instanceof Error ? `Koneksi ESP32/API gagal: ${error.message}` : "Koneksi ESP32/API gagal.");
-        }
-      } finally {
-        if (active) timer = window.setTimeout(refreshDetections, 500);
       }
     }
 
-    void refreshDetections();
+    let failures = 0;
+    let etag = "";
+    async function pollLatestDetection() {
+      try {
+        const headers = { "ngrok-skip-browser-warning": "1" };
+        if (etag) headers["If-None-Match"] = etag;
+        const response = await apiFetch("/api/deteksi/latest", { headers });
+        if (!active) return;
+        if (response.status === 304) {
+          failures = 0;
+          return;
+        }
+        const payload = await response.json().catch(() => ({}));
+        if (!active) return;
+        if (!response.ok) {
+          throw new Error(errorMessage(
+            payload,
+            `Server VestCare mengembalikan ${response.status}.`,
+          ));
+        }
+        etag = response.headers.get("ETag") || etag;
+        failures = 0;
+        applyLatestDetection(payload);
+      } catch (error) {
+        if (!active) return;
+        failures = Math.min(failures + 1, 4);
+        if (failures >= 3) {
+          setMessage(error instanceof Error
+            ? `Koneksi hasil deteksi gagal: ${error.message}`
+            : "Koneksi hasil deteksi gagal.");
+        }
+      }
+      if (active) {
+        const delay = Math.min(ESP32_DETECTION_POLL_INTERVAL_MS * (2 ** failures), 1200);
+        timer = window.setTimeout(pollLatestDetection, delay);
+      }
+    }
+
+    void pollLatestDetection();
     return () => {
       active = false;
-      window.clearTimeout(timer);
+      if (timer) window.clearTimeout(timer);
     };
   }, [status]);
+
+  useEffect(() => {
+    if (status !== "esp32") return undefined;
+
+    let active = true;
+    let timer = null;
+    let etag = "";
+    let failures = 0;
+    let lastFrameAt = Date.now();
+
+    async function pollLatestFrame() {
+      try {
+        const headers = { "ngrok-skip-browser-warning": "1" };
+        if (etag) headers["If-None-Match"] = etag;
+        const response = await apiFetch(ESP32_FRAME_URL, { headers });
+        if (!active) return;
+
+        if (response.status === 204) {
+          failures = 0;
+          if (Date.now() - lastFrameAt > 5000) {
+            setStreamState("error");
+            setMessage("Belum ada frame kamera baru; mencoba kembali.");
+          }
+        } else if (response.status === 304) {
+          failures = 0;
+          lastFrameAt = Date.now();
+          if (esp32FrameLoadedRef.current) setStreamState("live");
+        } else if (!response.ok) {
+          throw new Error(`Server kamera mengembalikan ${response.status}.`);
+        } else {
+          const blob = await response.blob();
+          if (!active) return;
+          etag = response.headers.get("ETag") || etag;
+          failures = 0;
+          lastFrameAt = Date.now();
+          esp32FrameLoadedRef.current = false;
+          setStreamState("connecting");
+          setEsp32FrameUrl(URL.createObjectURL(blob));
+        }
+      } catch {
+        if (!active) return;
+        failures = Math.min(failures + 1, 4);
+        if (Date.now() - lastFrameAt > 5000) {
+          setStreamState("error");
+          setMessage("Koneksi kamera gagal; mencoba mengambil gambar kembali.");
+        }
+      }
+
+      if (active) {
+        const delay = Math.min(ESP32_FRAME_POLL_INTERVAL_MS * (2 ** failures), 1200);
+        timer = window.setTimeout(pollLatestFrame, delay);
+      }
+    }
+
+    void pollLatestFrame();
+    return () => {
+      active = false;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [status]);
+
+  useEffect(() => {
+    if (status !== "esp32") return undefined;
+
+    const image = esp32ImageRef.current;
+    const canvas = boxesRef.current;
+    if (!image || !canvas) return undefined;
+
+    function drawBoxes() {
+      const context = canvas.getContext("2d");
+      if (!context) return;
+
+      const canvasRect = canvas.getBoundingClientRect();
+      const imageRect = image.getBoundingClientRect();
+      const ratio = window.devicePixelRatio || 1;
+      canvas.width = Math.round(canvasRect.width * ratio);
+      canvas.height = Math.round(canvasRect.height * ratio);
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+      context.clearRect(0, 0, canvasRect.width, canvasRect.height);
+
+      if (!image.naturalWidth || !image.naturalHeight) return;
+
+      const scale = Math.min(
+        imageRect.width / image.naturalWidth,
+        imageRect.height / image.naturalHeight,
+      );
+      const offsetX = imageRect.left - canvasRect.left
+        + (imageRect.width - image.naturalWidth * scale) / 2;
+      const offsetY = imageRect.top - canvasRect.top
+        + (imageRect.height - image.naturalHeight * scale) / 2;
+
+      context.font = "600 13px system-ui, sans-serif";
+      context.lineWidth = 3;
+      liveDetections.forEach((detection) => {
+        const [left, top, right, bottom] = detection.bbox || [];
+        if (![left, top, right, bottom].every(Number.isFinite)) return;
+
+        const color = detection.level === "BAHAYA" ? "#ff4055"
+          : detection.level === "WASPADA" ? "#ffbd35"
+          : detection.level === "INFO" ? "#46dd91" : "#31c7e8";
+        const x = offsetX + left * image.naturalWidth * scale;
+        const y = offsetY + top * image.naturalHeight * scale;
+        const width = (right - left) * image.naturalWidth * scale;
+        const height = (bottom - top) * image.naturalHeight * scale;
+        const label = `${labelObjek(detection)} ${Math.round(detection.confidence)}%`;
+
+        context.strokeStyle = color;
+        context.strokeRect(x, y, width, height);
+        context.fillStyle = color;
+        const labelY = Math.max(0, y - 22);
+        context.fillRect(x, labelY, context.measureText(label).width + 12, 20);
+        context.fillStyle = "#102a43";
+        context.fillText(label, x + 6, labelY + 14);
+      });
+    }
+
+    drawBoxes();
+    const resizeObserver = new ResizeObserver(drawBoxes);
+    resizeObserver.observe(canvas);
+    resizeObserver.observe(image);
+    return () => resizeObserver.disconnect();
+  }, [liveDetections, status, streamState]);
 
   useEffect(() => {
     if (status !== "camera") return undefined;
@@ -315,6 +574,7 @@ export default function CameraCapture({ onDetections }) {
     let lastAlertAt = 0;
     let lastSpokenAt = 0;
     let previousDetections = [];
+    let failures = 0;
 
     function renderBoxes(detections) {
       const video = videoRef.current;
@@ -391,15 +651,20 @@ export default function CameraCapture({ onDetections }) {
         body.append("sesi", sessionIdRef.current);
         body.append("ts_ms", String(Math.round(performance.now())));
         requestController = new AbortController();
-        const response = await fetch(API_URL, {
+        const response = await apiFetch(API_URL, {
           method: "POST",
           body,
-          cache: "no-store",
           signal: requestController.signal,
-        });
+        }, { timeoutMs: REALTIME_REQUEST_TIMEOUT_MS });
         const payload = await response.json().catch(() => ({}));
         if (!active) return;
-        if (!response.ok) throw new Error(payload.detail || `Server deteksi mengembalikan ${response.status}.`);
+        if (!response.ok) {
+          throw new Error(errorMessage(
+            payload,
+            `Server deteksi mengembalikan ${response.status}.`,
+          ));
+        }
+        failures = 0;
 
         const detections = smoothDetectionBoxes(normalizeDetections(payload), previousDetections);
         previousDetections = detections;
@@ -408,13 +673,14 @@ export default function CameraCapture({ onDetections }) {
         onDetectionsRef.current(detections);
         const alerts = detections.filter((detection) => detection.level !== "AMAN");
         const now = Date.now();
+        const hasAudioPlan = Array.isArray(payload.suara?.segmen) && payload.suara.segmen.length > 0;
 
         if (alerts.length) {
           lastAlertAt = now;
           const top = alerts[0];
           const nextKey = `${top.object}:${top.arah}`;
           const nextLevel = { AMAN: 0, INFO: 1, WASPADA: 2, BAHAYA: 3 }[top.level] || 0;
-          if ((nextKey !== alertKey || nextLevel > alertLevel) && now - lastSpokenAt >= 1800) {
+          if (hasAudioPlan && (nextKey !== alertKey || nextLevel > alertLevel) && now - lastSpokenAt >= 1800) {
             alertKey = nextKey;
             alertLevel = nextLevel;
             lastSpokenAt = now;
@@ -426,7 +692,7 @@ export default function CameraCapture({ onDetections }) {
           lastAlertAt = now;
           const top = detections[0];
           const nextKey = `${top.object}:${top.arah}`;
-          if ((nextKey !== alertKey || alertLevel > 0) && now - lastSpokenAt >= 1800) {
+          if (hasAudioPlan && (nextKey !== alertKey || alertLevel > 0) && now - lastSpokenAt >= 1800) {
             alertKey = nextKey;
             alertLevel = 0;
             lastSpokenAt = now;
@@ -449,10 +715,16 @@ export default function CameraCapture({ onDetections }) {
       } catch (error) {
         if (active) {
           setMessage(error instanceof Error ? `Deteksi gagal: ${error.message}` : "Deteksi real-time gagal.");
+          failures = Math.min(failures + 1, 4);
         }
       } finally {
         detectingRef.current = false;
-        if (active) timer = window.setTimeout(detectFrame, REALTIME_DETECTION_INTERVAL_MS);
+        if (active) {
+          const delay = failures
+            ? Math.min(REALTIME_DETECTION_INTERVAL_MS * (2 ** failures), 2000)
+            : REALTIME_DETECTION_INTERVAL_MS;
+          timer = window.setTimeout(detectFrame, delay);
+        }
       }
     }
 
@@ -466,39 +738,93 @@ export default function CameraCapture({ onDetections }) {
     };
   }, [status]);
 
-  async function openCamera() {
-    if (ESP32_STREAM_URL) {
-      await unlockAudio();
-      setStatus("esp32");
-      setMessage("Kamera ESP32 terhubung. Menunggu hasil deteksi API...");
-      setLiveDetections([]);
-      setPreview(null);
-      setFile(null);
-      return;
-    }
+  function stopBrowserStream() {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+  }
 
+  function openEsp32Camera() {
+    stopBrowserStream();
+    esp32FrameLoadedRef.current = false;
+    setEsp32FrameUrl(null);
+    setStreamState("connecting");
+    setStatus("esp32");
+    setMessage("Kamera ESP32 terhubung. Menunggu hasil deteksi API...");
+    setLiveDetections([]);
+    setPreview(null);
+    setFile(null);
+  }
+
+  async function openBrowserCamera() {
+    stopBrowserStream();
     if (!navigator.mediaDevices?.getUserMedia) {
       inputRef.current?.click();
-      return;
+      return false;
     }
 
     try {
-      const audioReady = unlockAudio();
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: "environment" } },
         audio: false,
       });
-      await audioReady;
       streamRef.current = stream;
       setStatus("camera");
       setMessage("");
       setLiveDetections([]);
       setPreview(null);
       setFile(null);
+      return true;
     } catch (error) {
       setStatus("error");
       setMessage(error instanceof Error ? `Kamera tidak dapat dibuka: ${error.message}` : "Kamera tidak dapat dibuka.");
+      return false;
     }
+  }
+
+  async function esp32CameraAvailable() {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 4000);
+    try {
+      const response = await apiFetch(ESP32_STATUS_URL, { signal: controller.signal });
+      if (!response.ok) return false;
+      const payload = await response.json().catch(() => ({}));
+      return Boolean(payload?.tersedia);
+    } catch {
+      return false;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  async function openCamera() {
+    if (openingRef.current) return;
+    openingRef.current = true;
+    try {
+      await unlockAudio();
+      // Jangan memaksa mode ESP32: jika rompi belum mengirim frame, dashboard
+      // otomatis memakai kamera perangkat agar tombol Deteksi tetap berfungsi.
+      if (await esp32CameraAvailable()) {
+        openEsp32Camera();
+        return;
+      }
+      await openBrowserCamera();
+    } finally {
+      openingRef.current = false;
+    }
+  }
+
+  async function switchToEsp32() {
+    await unlockAudio();
+    if (await esp32CameraAvailable()) {
+      openEsp32Camera();
+    } else {
+      setMessage("Kamera ESP32 belum mengirim frame. Periksa daya dan koneksi perangkat.");
+    }
+  }
+
+  async function switchToBrowser() {
+    await unlockAudio();
+    await openBrowserCamera();
   }
 
   function handleFileChange(event) {
@@ -514,8 +840,10 @@ export default function CameraCapture({ onDetections }) {
 
   function closePreview() {
     stopAudio();
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
+    stopBrowserStream();
+    esp32FrameLoadedRef.current = false;
+    setEsp32FrameUrl(null);
+    setStreamState("connecting");
     setLiveDetections([]);
     onDetectionsRef.current([]);
     if (preview) URL.revokeObjectURL(preview);
@@ -537,16 +865,19 @@ export default function CameraCapture({ onDetections }) {
     body.append("sesi", "tanpa");
 
     try {
-      const response = await fetch(API_URL, {
+      const response = await apiFetch(API_URL, {
         method: "POST",
         body,
-      });
+      }, { timeoutMs: REALTIME_REQUEST_TIMEOUT_MS });
 
+      const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(`Server deteksi mengembalikan ${response.status}.`);
+        throw new Error(errorMessage(
+          payload,
+          `Server deteksi mengembalikan ${response.status}.`,
+        ));
       }
 
-      const payload = await response.json();
       const detections = normalizeDetections(payload);
       onDetections(detections);
       setLiveDetections(detections);
@@ -554,7 +885,9 @@ export default function CameraCapture({ onDetections }) {
       setMessage(detections.length
         ? `${detections.length} objek terdeteksi.`
         : "Tidak ada objek yang cukup yakin.");
-      if (payload.suara) await playPlan(payload.suara);
+      if (Array.isArray(payload.suara?.segmen) && payload.suara.segmen.length) {
+        await playPlan(payload.suara);
+      }
       if (payload.supabase_error) {
         setMessage(`Deteksi berhasil, tetapi gagal disimpan ke Supabase: ${payload.supabase_error}`);
       }
@@ -564,6 +897,20 @@ export default function CameraCapture({ onDetections }) {
     }
   }
 
+  const deviceKnown = typeof deviceOnline === "boolean";
+  const esp32State = streamState === "error" ? "error" : deviceKnown && !deviceOnline ? "offline" : "online";
+  const esp32Label = {
+    online: "Perangkat online · terhubung ke API",
+    offline: `Perangkat offline${lastSeen ? ` · terakhir aktif ${formatAgo(lastSeen)}` : ""}`,
+    error: "Stream kamera terputus",
+  }[esp32State];
+  const keepOriginalMessage = /^(Koneksi|Deteksi gagal)/.test(message);
+  const esp32Message = esp32State === "online" || keepOriginalMessage
+    ? message
+    : esp32State === "error"
+      ? "Gambar dari kamera ESP32 tidak dapat dimuat. Periksa daya dan jaringan perangkat."
+      : "Perangkat offline. Deteksi akan berjalan lagi setelah rompi terhubung kembali.";
+
   return (
     <>
       <button
@@ -572,7 +919,7 @@ export default function CameraCapture({ onDetections }) {
         aria-label="Ambil foto untuk deteksi"
         onClick={openCamera}
       >
-        <i className="ni ni-camera-compact" aria-hidden="true"></i>
+        <Icon name="camera" size={20} />
         <span>Deteksi</span>
       </button>
       <input
@@ -598,6 +945,29 @@ export default function CameraCapture({ onDetections }) {
               <button type="button" className="vc-camera-primary" onClick={submitDetection} disabled={status === "loading"}>
                 {status === "loading" ? "Memproses..." : "Kirim untuk deteksi"}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {status === "error" && (
+        <div className="vc-camera-backdrop" role="dialog" aria-modal="true" aria-label="Kamera tidak tersedia">
+          <div className="vc-camera-dialog">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="mb-0 text-lg font-bold text-slate-800">Kamera tidak tersedia</h2>
+              <button type="button" className="vc-camera-close" onClick={closePreview} aria-label="Tutup">×</button>
+            </div>
+            <p className="vc-camera-message is-error" role="alert">
+              {message || "Kamera tidak dapat dibuka."}
+            </p>
+            <p className="text-sm text-slate-600">
+              Anda tetap dapat mengirim foto dari galeri untuk dideteksi.
+            </p>
+            <div className="flex justify-end gap-2 mt-4">
+              <button type="button" className="vc-camera-secondary" onClick={() => inputRef.current?.click()}>
+                Pilih foto
+              </button>
+              <button type="button" className="vc-camera-secondary" onClick={closePreview}>Tutup</button>
+              <button type="button" className="vc-camera-primary" onClick={openCamera}>Coba lagi</button>
             </div>
           </div>
         </div>
@@ -631,6 +1001,9 @@ export default function CameraCapture({ onDetections }) {
               </ul>
             )}
             <div className="vc-camera-footer flex justify-end gap-2 mt-4">
+              <button type="button" className="vc-camera-secondary" onClick={switchToEsp32}>
+                Kamera ESP32
+              </button>
               <button type="button" className="vc-camera-secondary" onClick={closePreview}>Batal</button>
               <span className="vc-camera-live-status">● Deteksi otomatis aktif</span>
             </div>
@@ -639,22 +1012,46 @@ export default function CameraCapture({ onDetections }) {
       )}
       {status === "esp32" && (
         <div className="vc-camera-backdrop vc-camera-backdrop--fullscreen" role="dialog" aria-modal="true" aria-label="Kamera ESP32-S3">
-          <div className="vc-camera-dialog vc-camera-dialog--fullscreen">
+          <div className="vc-camera-dialog vc-camera-dialog--fullscreen" data-state={esp32State}>
             <div className="vc-camera-header flex items-center justify-between mb-4">
               <h2 className="mb-0 text-lg font-bold text-slate-800">Kamera ESP32-S3 VestCare</h2>
               <button type="button" className="vc-camera-close" onClick={closePreview} aria-label="Tutup">×</button>
             </div>
             <div className="vc-camera-stage vc-camera-stage--fullscreen">
               <img
+                ref={esp32ImageRef}
                 className="vc-camera-preview"
-                src={ESP32_STREAM_URL}
+                src={esp32FrameUrl || undefined}
                 alt="Live stream kamera ESP32-S3"
+                onLoad={() => {
+                  esp32FrameLoadedRef.current = true;
+                  setStreamState("live");
+                  setMessage((current) => /^(Belum ada frame|Koneksi kamera)/.test(current) ? "" : current);
+                }}
+                onError={() => {
+                  esp32FrameLoadedRef.current = false;
+                  setStreamState("error");
+                }}
               />
-              <span className="vc-camera-count" role="status">
+              <canvas ref={boxesRef} className="vc-camera-boxes" aria-hidden="true" />
+              {streamState === "error" && (
+                <div className="vc-camera-offline" role="alert">
+                  <strong>Stream tidak tersedia</strong>
+                  <span>Kamera ESP32 belum mengirim gambar.</span>
+                  <button type="button" className="vc-camera-secondary" onClick={switchToBrowser}>
+                    Gunakan kamera perangkat
+                  </button>
+                </div>
+              )}
+              <span className="vc-camera-count" role="status" data-state={esp32State}>
                 {liveDetections.length} objek terdeteksi
               </span>
             </div>
-            {message && <p className="vc-camera-message" role="status">{message}</p>}
+            {esp32Message && (
+              <p className={`vc-camera-message ${esp32State !== "online" && !keepOriginalMessage ? "is-error" : ""}`} role="status">
+                {esp32Message}
+              </p>
+            )}
             {liveDetections.length > 0 && (
               <ul className="vc-camera-results">
                 {liveDetections.map((detection, index) => (
@@ -669,8 +1066,17 @@ export default function CameraCapture({ onDetections }) {
               </ul>
             )}
             <div className="vc-camera-footer flex justify-end gap-2 mt-4">
+              <button type="button" className="vc-camera-secondary" onClick={chooseAudioOutput}>
+                {audioOutputName ? `Audio: ${audioOutputName}` : "Pilih TWS"}
+              </button>
+              <button type="button" className="vc-camera-secondary" onClick={switchToBrowser}>
+                Kamera perangkat
+              </button>
               <button type="button" className="vc-camera-secondary" onClick={closePreview}>Batal</button>
-              <span className="vc-camera-live-status">● ESP32 terhubung ke API</span>
+              <span className="vc-camera-live-status" data-state={esp32State} role="status">
+                <i className="vc-camera-live-dot" aria-hidden="true" />
+                {esp32Label}
+              </span>
             </div>
           </div>
         </div>

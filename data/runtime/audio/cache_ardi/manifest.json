@@ -1,0 +1,517 @@
+{
+  "skema": 3,
+  "suara": "id-ID-ArdiNeural",
+  "format": "mp3",
+  "kelas": [
+    "lubang",
+    "motor",
+    "mobil",
+    "orang",
+    "pohon",
+    "umum"
+  ],
+  "meta": {
+    "info": {
+      "prioritas": 2,
+      "cooldown": 5.0,
+      "mendesak": false
+    },
+    "waspada": {
+      "prioritas": 3,
+      "cooldown": 3.5,
+      "mendesak": false
+    },
+    "bahaya": {
+      "prioritas": 5,
+      "cooldown": 2.0,
+      "mendesak": true
+    },
+    "jalur_aman": {
+      "prioritas": 1,
+      "cooldown": 12.0,
+      "mendesak": false
+    }
+  },
+  "pesan": {
+    "awal_waspada": [
+      {
+        "teks": "Hati-hati.",
+        "berkas": "awal_waspada_1.mp3"
+      },
+      {
+        "teks": "Waspada.",
+        "berkas": "awal_waspada_2.mp3"
+      },
+      {
+        "teks": "Perhatian.",
+        "berkas": "awal_waspada_3.mp3"
+      }
+    ],
+    "awal_bahaya": [
+      {
+        "teks": "Awas!",
+        "berkas": "awal_bahaya_1.mp3"
+      },
+      {
+        "teks": "Bahaya!",
+        "berkas": "awal_bahaya_2.mp3"
+      },
+      {
+        "teks": "Awas, hati-hati!",
+        "berkas": "awal_bahaya_3.mp3"
+      }
+    ],
+    "jarak_05": [
+      {
+        "teks": "kurang dari satu meter",
+        "berkas": "jarak_05_1.mp3"
+      },
+      {
+        "teks": "jaraknya kurang dari satu meter",
+        "berkas": "jarak_05_2.mp3"
+      }
+    ],
+    "jarak_10": [
+      {
+        "teks": "sekitar satu meter",
+        "berkas": "jarak_10_1.mp3"
+      },
+      {
+        "teks": "kira-kira satu meter",
+        "berkas": "jarak_10_2.mp3"
+      }
+    ],
+    "jarak_15": [
+      {
+        "teks": "sekitar satu setengah meter",
+        "berkas": "jarak_15_1.mp3"
+      },
+      {
+        "teks": "kira-kira satu setengah meter",
+        "berkas": "jarak_15_2.mp3"
+      }
+    ],
+    "jarak_20": [
+      {
+        "teks": "sekitar dua meter",
+        "berkas": "jarak_20_1.mp3"
+      },
+      {
+        "teks": "kira-kira dua meter",
+        "berkas": "jarak_20_2.mp3"
+      }
+    ],
+    "jarak_25": [
+      {
+        "teks": "sekitar dua setengah meter",
+        "berkas": "jarak_25_1.mp3"
+      },
+      {
+        "teks": "kira-kira dua setengah meter",
+        "berkas": "jarak_25_2.mp3"
+      }
+    ],
+    "jarak_30": [
+      {
+        "teks": "sekitar tiga meter",
+        "berkas": "jarak_30_1.mp3"
+      },
+      {
+        "teks": "kira-kira tiga meter",
+        "berkas": "jarak_30_2.mp3"
+      }
+    ],
+    "jarak_35": [
+      {
+        "teks": "sekitar tiga setengah meter",
+        "berkas": "jarak_35_1.mp3"
+      },
+      {
+        "teks": "kira-kira tiga setengah meter",
+        "berkas": "jarak_35_2.mp3"
+      }
+    ],
+    "jarak_40": [
+      {
+        "teks": "sekitar empat meter",
+        "berkas": "jarak_40_1.mp3"
+      },
+      {
+        "teks": "kira-kira empat meter",
+        "berkas": "jarak_40_2.mp3"
+      }
+    ],
+    "jarak_45": [
+      {
+        "teks": "sekitar empat setengah meter",
+        "berkas": "jarak_45_1.mp3"
+      },
+      {
+        "teks": "kira-kira empat setengah meter",
+        "berkas": "jarak_45_2.mp3"
+      }
+    ],
+    "jarak_50": [
+      {
+        "teks": "sekitar lima meter",
+        "berkas": "jarak_50_1.mp3"
+      },
+      {
+        "teks": "kira-kira lima meter",
+        "berkas": "jarak_50_2.mp3"
+      }
+    ],
+    "benda_lubang_depan_netral": [
+      {
+        "teks": "lubang di depan",
+        "berkas": "benda_lubang_depan_netral_1.mp3"
+      },
+      {
+        "teks": "ada lubang di depan",
+        "berkas": "benda_lubang_depan_netral_2.mp3"
+      },
+      {
+        "teks": "lubang tepat di depan",
+        "berkas": "benda_lubang_depan_netral_3.mp3"
+      }
+    ],
+    "benda_lubang_kiri_netral": [
+      {
+        "teks": "lubang di kiri",
+        "berkas": "benda_lubang_kiri_netral_1.mp3"
+      },
+      {
+        "teks": "ada lubang di kiri",
+        "berkas": "benda_lubang_kiri_netral_2.mp3"
+      },
+      {
+        "teks": "lubang di sebelah kiri",
+        "berkas": "benda_lubang_kiri_netral_3.mp3"
+      }
+    ],
+    "benda_lubang_kanan_netral": [
+      {
+        "teks": "lubang di kanan",
+        "berkas": "benda_lubang_kanan_netral_1.mp3"
+      },
+      {
+        "teks": "ada lubang di kanan",
+        "berkas": "benda_lubang_kanan_netral_2.mp3"
+      },
+      {
+        "teks": "lubang di sebelah kanan",
+        "berkas": "benda_lubang_kanan_netral_3.mp3"
+      }
+    ],
+    "benda_motor_depan_netral": [
+      {
+        "teks": "sepeda motor di depan",
+        "berkas": "benda_motor_depan_netral_1.mp3"
+      },
+      {
+        "teks": "ada sepeda motor di depan",
+        "berkas": "benda_motor_depan_netral_2.mp3"
+      },
+      {
+        "teks": "sepeda motor tepat di depan",
+        "berkas": "benda_motor_depan_netral_3.mp3"
+      }
+    ],
+    "benda_motor_kiri_netral": [
+      {
+        "teks": "sepeda motor di kiri",
+        "berkas": "benda_motor_kiri_netral_1.mp3"
+      },
+      {
+        "teks": "ada sepeda motor di kiri",
+        "berkas": "benda_motor_kiri_netral_2.mp3"
+      },
+      {
+        "teks": "sepeda motor di sebelah kiri",
+        "berkas": "benda_motor_kiri_netral_3.mp3"
+      }
+    ],
+    "benda_motor_kanan_netral": [
+      {
+        "teks": "sepeda motor di kanan",
+        "berkas": "benda_motor_kanan_netral_1.mp3"
+      },
+      {
+        "teks": "ada sepeda motor di kanan",
+        "berkas": "benda_motor_kanan_netral_2.mp3"
+      },
+      {
+        "teks": "sepeda motor di sebelah kanan",
+        "berkas": "benda_motor_kanan_netral_3.mp3"
+      }
+    ],
+    "benda_mobil_depan_netral": [
+      {
+        "teks": "mobil di depan",
+        "berkas": "benda_mobil_depan_netral_1.mp3"
+      },
+      {
+        "teks": "ada mobil di depan",
+        "berkas": "benda_mobil_depan_netral_2.mp3"
+      },
+      {
+        "teks": "mobil tepat di depan",
+        "berkas": "benda_mobil_depan_netral_3.mp3"
+      }
+    ],
+    "benda_mobil_kiri_netral": [
+      {
+        "teks": "mobil di kiri",
+        "berkas": "benda_mobil_kiri_netral_1.mp3"
+      },
+      {
+        "teks": "ada mobil di kiri",
+        "berkas": "benda_mobil_kiri_netral_2.mp3"
+      },
+      {
+        "teks": "mobil di sebelah kiri",
+        "berkas": "benda_mobil_kiri_netral_3.mp3"
+      }
+    ],
+    "benda_mobil_kanan_netral": [
+      {
+        "teks": "mobil di kanan",
+        "berkas": "benda_mobil_kanan_netral_1.mp3"
+      },
+      {
+        "teks": "ada mobil di kanan",
+        "berkas": "benda_mobil_kanan_netral_2.mp3"
+      },
+      {
+        "teks": "mobil di sebelah kanan",
+        "berkas": "benda_mobil_kanan_netral_3.mp3"
+      }
+    ],
+    "benda_orang_depan_netral": [
+      {
+        "teks": "orang di depan",
+        "berkas": "benda_orang_depan_netral_1.mp3"
+      },
+      {
+        "teks": "ada orang di depan",
+        "berkas": "benda_orang_depan_netral_2.mp3"
+      },
+      {
+        "teks": "orang tepat di depan",
+        "berkas": "benda_orang_depan_netral_3.mp3"
+      }
+    ],
+    "benda_orang_kiri_netral": [
+      {
+        "teks": "orang di kiri",
+        "berkas": "benda_orang_kiri_netral_1.mp3"
+      },
+      {
+        "teks": "ada orang di kiri",
+        "berkas": "benda_orang_kiri_netral_2.mp3"
+      },
+      {
+        "teks": "orang di sebelah kiri",
+        "berkas": "benda_orang_kiri_netral_3.mp3"
+      }
+    ],
+    "benda_orang_kanan_netral": [
+      {
+        "teks": "orang di kanan",
+        "berkas": "benda_orang_kanan_netral_1.mp3"
+      },
+      {
+        "teks": "ada orang di kanan",
+        "berkas": "benda_orang_kanan_netral_2.mp3"
+      },
+      {
+        "teks": "orang di sebelah kanan",
+        "berkas": "benda_orang_kanan_netral_3.mp3"
+      }
+    ],
+    "benda_pohon_depan_netral": [
+      {
+        "teks": "pohon di depan",
+        "berkas": "benda_pohon_depan_netral_1.mp3"
+      },
+      {
+        "teks": "ada pohon di depan",
+        "berkas": "benda_pohon_depan_netral_2.mp3"
+      },
+      {
+        "teks": "pohon tepat di depan",
+        "berkas": "benda_pohon_depan_netral_3.mp3"
+      }
+    ],
+    "benda_pohon_kiri_netral": [
+      {
+        "teks": "pohon di kiri",
+        "berkas": "benda_pohon_kiri_netral_1.mp3"
+      },
+      {
+        "teks": "pohon di sebelah kiri",
+        "berkas": "benda_pohon_kiri_netral_2.mp3"
+      },
+      {
+        "teks": "ada pohon di kiri",
+        "berkas": "benda_pohon_kiri_netral_3.mp3"
+      }
+    ],
+    "benda_pohon_kanan_netral": [
+      {
+        "teks": "pohon di kanan",
+        "berkas": "benda_pohon_kanan_netral_1.mp3"
+      },
+      {
+        "teks": "pohon di sebelah kanan",
+        "berkas": "benda_pohon_kanan_netral_2.mp3"
+      },
+      {
+        "teks": "ada pohon di kanan",
+        "berkas": "benda_pohon_kanan_netral_3.mp3"
+      }
+    ],
+    "benda_umum_depan_netral": [
+      {
+        "teks": "benda di depan",
+        "berkas": "benda_umum_depan_netral_1.mp3"
+      },
+      {
+        "teks": "ada benda di depan",
+        "berkas": "benda_umum_depan_netral_2.mp3"
+      },
+      {
+        "teks": "rintangan di depan",
+        "berkas": "benda_umum_depan_netral_3.mp3"
+      }
+    ],
+    "benda_umum_kiri_netral": [
+      {
+        "teks": "benda di kiri",
+        "berkas": "benda_umum_kiri_netral_1.mp3"
+      },
+      {
+        "teks": "ada benda di kiri",
+        "berkas": "benda_umum_kiri_netral_2.mp3"
+      },
+      {
+        "teks": "di sebelah kiri ada benda",
+        "berkas": "benda_umum_kiri_netral_3.mp3"
+      }
+    ],
+    "benda_umum_kanan_netral": [
+      {
+        "teks": "benda di kanan",
+        "berkas": "benda_umum_kanan_netral_1.mp3"
+      },
+      {
+        "teks": "ada benda di kanan",
+        "berkas": "benda_umum_kanan_netral_2.mp3"
+      },
+      {
+        "teks": "di sebelah kanan ada benda",
+        "berkas": "benda_umum_kanan_netral_3.mp3"
+      }
+    ],
+    "solusi_lurus": [
+      {
+        "teks": "Jalur aman silakan lurus terus",
+        "berkas": "solusi_lurus_1.mp3"
+      },
+      {
+        "teks": "Silakan berjalan lurus jalur aman",
+        "berkas": "solusi_lurus_2.mp3"
+      },
+      {
+        "teks": "Jalur di depan aman teruskan jalan",
+        "berkas": "solusi_lurus_3.mp3"
+      }
+    ],
+    "solusi_pelan": [
+      {
+        "teks": "Kurangi kecepatan dan berjalanlah lebih pelan",
+        "berkas": "solusi_pelan_1.mp3"
+      },
+      {
+        "teks": "Jalan lebih pelan dan tetap waspada",
+        "berkas": "solusi_pelan_2.mp3"
+      },
+      {
+        "teks": "Kurangi kecepatan dan tetap hati hati",
+        "berkas": "solusi_pelan_3.mp3"
+      }
+    ],
+    "solusi_berhenti": [
+      {
+        "teks": "Segera berhenti sekarang juga",
+        "berkas": "solusi_berhenti_1.mp3"
+      },
+      {
+        "teks": "Berhenti sekarang untuk keamanan",
+        "berkas": "solusi_berhenti_2.mp3"
+      }
+    ],
+    "solusi_pelan_kiri": [
+      {
+        "teks": "Jalan pelan geser ke kiri lalu teruskan",
+        "berkas": "solusi_pelan_kiri_1.mp3"
+      },
+      {
+        "teks": "Berjalan pelan lalu bergeserlah ke kiri",
+        "berkas": "solusi_pelan_kiri_2.mp3"
+      },
+      {
+        "teks": "Geser ke kiri jalan pelan lalu lanjut",
+        "berkas": "solusi_pelan_kiri_3.mp3"
+      }
+    ],
+    "solusi_pelan_kanan": [
+      {
+        "teks": "Jalan pelan geser ke kanan lalu teruskan",
+        "berkas": "solusi_pelan_kanan_1.mp3"
+      },
+      {
+        "teks": "Berjalan pelan lalu bergeserlah ke kanan",
+        "berkas": "solusi_pelan_kanan_2.mp3"
+      },
+      {
+        "teks": "Geser ke kanan jalan pelan lalu lanjut",
+        "berkas": "solusi_pelan_kanan_3.mp3"
+      }
+    ],
+    "solusi_berhenti_kiri": [
+      {
+        "teks": "Berhenti dulu lalu bergeser ke kiri",
+        "berkas": "solusi_berhenti_kiri_1.mp3"
+      },
+      {
+        "teks": "Berhenti sebentar lalu bergeser ke kiri",
+        "berkas": "solusi_berhenti_kiri_2.mp3"
+      }
+    ],
+    "solusi_berhenti_kanan": [
+      {
+        "teks": "Berhenti dulu lalu bergeser ke kanan",
+        "berkas": "solusi_berhenti_kanan_1.mp3"
+      },
+      {
+        "teks": "Berhenti sebentar lalu bergeser ke kanan",
+        "berkas": "solusi_berhenti_kanan_2.mp3"
+      }
+    ],
+    "jalur_aman": [
+      {
+        "teks": "Jalur di depan aman untuk melanjutkan perjalanan",
+        "berkas": "jalur_aman_1.mp3"
+      },
+      {
+        "teks": "Silakan lanjut berjalan jalur sudah bebas rintangan",
+        "berkas": "jalur_aman_2.mp3"
+      },
+      {
+        "teks": "Jalan di depan sudah bersih silakan maju",
+        "berkas": "jalur_aman_3.mp3"
+      }
+    ]
+  }
+}

@@ -5,6 +5,7 @@ __pycache__/
 .Python
 venv/
 .venv/
+.venv-lama/
 env/
 ENV/
 env.bak/
@@ -65,6 +66,12 @@ data/
 # Data terpilih yang sebelumnya sudah dilacak, kini berada pada kategori data/
 !data/
 data/*
+# Pustaka suara Ardi ikut di-commit agar audio dashboard juga tersedia di
+# Railway. Riwayat runtime lain tetap diabaikan.
+!data/runtime/
+data/runtime/*
+!data/runtime/audio/
+!data/runtime/audio/**
 !data/archive/
 data/archive/*
 !data/archive/chace/
@@ -85,3 +92,4 @@ data/results/logs/*
 data/results/run_legacy/*
 !data/results/run_legacy/run_train1/
 !data/results/run_legacy/run_train1/**
+node_modules

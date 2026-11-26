@@ -1,13 +1,14 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState } from "react";
 import { DEFAULT_MAP_CONFIG, initialState, normalizeDetections } from "./data";
+import { getJson } from "./api";
 
 // Dashboard mengambil data dari server VestCare (same-origin) agar service role
-// Supabase tidak pernah masuk ke bundle browser. Telemetri Wemos didorong lewat
-// Server-Sent Events agar peta bergerak seketika, dengan polling 1 detik sebagai
-// cadangan bila koneksi SSE terputus (mis. di balik ngrok).
+// Supabase tidak pernah masuk ke bundle browser. Telemetri ESP32-S3 didorong lewat
+// Server-Sent Events agar peta bergerak seketika, sementara polling 1 detik tetap
+// berjalan untuk mengatasi buffering SSE pada tunnel.
 const RISK_RANK = { BAHAYA: 3, WASPADA: 2, INFO: 1, AMAN: 0 };
 const MAX_TRAIL = 300;
-const TELEMETRI_POLL_MS = 1000;
+const TELEMETRI_POLL_MS = 500;
 const DASHBOARD_POLL_MS = 10000;
 const TELEMETRI_STALE_MS = 15000;
 
@@ -151,19 +152,6 @@ function readMapConfig(payload) {
   };
 }
 
-async function getJson(url) {
-  const response = await fetch(url, {
-    credentials: "same-origin",
-    cache: "no-store",
-    headers: { "ngrok-skip-browser-warning": "1" },
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(payload.detail || `Server VestCare mengembalikan ${response.status}.`);
-  }
-  return payload;
-}
-
 function historyPosition(entry) {
   if (!entry) return null;
   if (entry.posisi && entry.posisi.lat != null && entry.posisi.lng != null) {
@@ -281,7 +269,9 @@ export default function useVestData() {
         return;
       }
 
-      source.onopen = () => stopPolling();
+      source.onopen = () => {
+        stopPolling();
+      };
       source.onmessage = (event) => {
         try {
           applyPayload(JSON.parse(event.data));
@@ -298,7 +288,6 @@ export default function useVestData() {
     }
 
     startStream();
-    startPolling();
 
     return () => {
       active = false;
@@ -381,11 +370,30 @@ export default function useVestData() {
             }
           }
 
-          const detections = latestHistoryDetections !== null
-            ? sortByRisk(latestHistoryDetections)
+          const liveRecent = current.detectionsUpdatedAt
+            && Date.now() - current.detectionsUpdatedAt < 15000;
+          const dashboardDetectionFresh = dashboard?.deteksi_live === true;
+          const dashboardDetections = dashboardDetectionFresh
+            ? sortByRisk(normalizeDetections(rows))
             : rows.length
               ? sortByRisk(normalizeDetections(latestBatch(rows)))
-              : current.detections;
+              : null;
+          const historyDetections = latestHistoryDetections !== null
+            ? sortByRisk(latestHistoryDetections)
+            : null;
+
+          // Jangan biarkan polling riwayat 10 detik menimpa bounding box
+          // realtime yang baru saja dikirim kamera.
+          let detections = current.detections;
+          if (liveRecent) {
+            detections = current.detections;
+          } else if (dashboardDetectionFresh) {
+            detections = dashboardDetections ?? [];
+          } else if (historyDetections !== null) {
+            detections = historyDetections;
+          } else if (dashboardDetections !== null) {
+            detections = dashboardDetections;
+          }
           const nextHistory = history?.length ? history : current.history;
 
           return {

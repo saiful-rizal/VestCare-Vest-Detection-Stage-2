@@ -1,30 +1,73 @@
+import { useEffect, useState } from "react";
 import ProfileMenu from "./ProfileMenu";
+import Icon from "./Icon";
+import logo from "../assets/img/favicon.png";
+import { profile } from "../data";
+
+const clockTime = new Intl.DateTimeFormat("id-ID", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Jakarta" });
+const clockDate = new Intl.DateTimeFormat("id-ID", { weekday: "long", day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Jakarta" });
 
 export default function Navbar({ device, position, telemetry, telemetryOnline }) {
+  const online = telemetryOnline ?? device.online;
+  const hasTelemetry = Boolean(telemetry?.updatedAt || telemetry?.fix || telemetry?.terbaca);
+  const tone = online ? "safe" : hasTelemetry ? "danger" : "idle";
+  const label = online ? "Rompi online" : hasTelemetry ? "Rompi offline" : "Menunggu rompi";
+
+  const [now, setNow] = useState(() => new Date());
+  const [theme, setTheme] = useState(() => document.documentElement.dataset.theme || "light");
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 15000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const toggleTheme = () => {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    document.documentElement.dataset.theme = next;
+    try { window.localStorage.setItem("vc-theme", next); } catch { /* penyimpanan tidak tersedia */ }
+  };
+
   return (
-    <nav className="relative flex flex-wrap items-center justify-between px-0 py-2 mx-6 transition-all ease-in shadow-none duration-250 rounded-2xl lg:flex-nowrap lg:justify-start">
-      <div className="flex items-center justify-between w-full px-4 py-1 mx-auto flex-wrap-inherit">
-        <nav>
-          <ol className="flex flex-wrap pt-1 mr-12 bg-transparent rounded-lg sm:mr-16">
-            <li className="text-sm leading-normal">
-              <a className="text-white opacity-50" href="#">Pages</a>
-            </li>
-            <li className="text-sm pl-2 capitalize leading-normal text-white before:float-left before:pr-2 before:text-white before:content-['/']" aria-current="page">Dashboard</li>
-          </ol>
-          <h6 className="mb-0 font-bold text-white capitalize">Dashboard</h6>
-        </nav>
-        <div className="flex items-center mt-2 grow sm:mt-0 sm:mr-6 md:mr-0 lg:flex lg:basis-auto">
-          <div className="md:ml-auto"></div>
-          <ul className="flex flex-row items-center justify-end pl-0 mb-0 list-none md-max:w-full">
-            <ProfileMenu
-              device={device}
-              position={position}
-              telemetry={telemetry}
-              telemetryOnline={telemetryOnline}
-            />
-          </ul>
+    <header className="vc-topbar">
+      <div className="vc-shell vc-topbar-inner">
+        <div className="vc-brand vc-brand--mobile">
+          <img src={logo} alt="" />
+          <div style={{ minWidth: 0 }}>
+            <span className="vc-brand-name">Vest-Care</span>
+            <span className="vc-brand-sub">{device.school || profile.sekolah}</span>
+          </div>
+        </div>
+        <div className="vc-pagehead">
+          <h1>Dashboard Monitoring</h1>
+          <p>{device.school || profile.sekolah} · pemantauan rompi cerdas</p>
+        </div>
+        <div className="vc-topbar-right">
+          <div className="vc-clock" aria-hidden="true">
+            <b>{clockTime.format(now).replace(".", ":")} WIB</b>
+            <span>{clockDate.format(now)}</span>
+          </div>
+          <span className={`vc-live vc-tone-${tone}`} data-live={online ? "true" : "false"} role="status">
+            <span className="vc-dot" />
+            <span className="vc-live-text">{label}</span>
+          </span>
+          <button
+            type="button"
+            className="vc-icon-btn"
+            onClick={toggleTheme}
+            aria-label={theme === "dark" ? "Ganti ke tema terang" : "Ganti ke tema gelap"}
+            title={theme === "dark" ? "Tema terang" : "Tema gelap"}
+          >
+            <Icon name={theme === "dark" ? "sun" : "moon"} size={18} />
+          </button>
+          <ProfileMenu
+            device={device}
+            position={position}
+            telemetry={telemetry}
+            telemetryOnline={telemetryOnline}
+          />
         </div>
       </div>
-    </nav>
+    </header>
   );
 }

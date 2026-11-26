@@ -1,4 +1,5 @@
 import Navbar from "./components/Navbar";
+import Sidebar from "./components/Sidebar";
 import StatCards from "./components/StatCards";
 import GpsMap from "./components/GpsMap";
 import StudentCard from "./components/StudentCard";
@@ -26,43 +27,50 @@ export default function App() {
     setState((state) => ({
       ...state,
       detections: newDetections,
+      detectionsUpdatedAt: Date.now(),
       detectionHistoryLoading: false,
       detectionHistoryError: null,
     }));
   }
 
   return (
-    <>
-      <div className="absolute w-full dark:hidden min-h-75" style={{ background: "linear-gradient(to top,#ffffff 0%,#660f08 75%)" }}></div>
-      <main className="relative h-full max-h-screen transition-all duration-200 ease-in-out rounded-xl">
-        <Navbar device={device} position={position} telemetry={telemetry} telemetryOnline={telemetryOnline} />
-        <div className="w-full px-6 py-6 mx-auto">
-          <StatCards
-            device={device}
+    <div className="vc-app">
+      <Sidebar device={device} online={telemetryOnline ?? device.online} />
+      <div className="vc-main">
+      <Navbar device={device} position={position} telemetry={telemetry} telemetryOnline={telemetryOnline} />
+      <main className="vc-shell vc-page">
+        <StatCards
+          device={device}
+          detections={detections}
+          telemetry={telemetry}
+          telemetryOnline={telemetryOnline}
+          historyLoading={detectionHistoryLoading}
+          historyError={detectionHistoryError}
+        />
+
+        <div className="vc-grid">
+          <GpsMap
+            position={position}
             detections={detections}
             telemetry={telemetry}
-            telemetryOnline={telemetryOnline}
-            historyLoading={detectionHistoryLoading}
-            historyError={detectionHistoryError}
+            trail={trail}
+            mapConfig={mapConfig}
           />
-          <div className="flex flex-wrap mt-6 -mx-3">
-            <GpsMap
-              position={position}
-              detections={detections}
-              telemetry={telemetry}
-              trail={trail}
-              mapConfig={mapConfig}
-            />
-            <StudentCard />
-          </div>
-          <div className="flex flex-wrap mt-6 -mx-3">
-            <DetectionHistory detections={history} />
+          <div className="vc-side">
+            <StudentCard device={device} />
             <CategoryList detections={detections} />
           </div>
-          <Footer />
         </div>
+
+        <DetectionHistory detections={history} />
+        <Footer />
       </main>
-      <CameraCapture onDetections={addDetections} />
-    </>
+      </div>
+      <CameraCapture
+        onDetections={addDetections}
+        deviceOnline={telemetryOnline ?? device.online}
+        lastSeen={telemetry?.updatedAt}
+      />
+    </div>
   );
 }

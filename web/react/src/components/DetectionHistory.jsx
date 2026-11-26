@@ -1,52 +1,110 @@
-import { COLOR, ICON, fmt } from "../data";
+import { useMemo, useState } from "react";
+import Icon, { OBJECT_ICON } from "./Icon";
+import { fmt, levelLabel, toneOf } from "../data";
 
-const TD = "p-2 align-middle bg-transparent border-b whitespace-nowrap dark:border-white/40";
-const LBL = "mb-0 text-xs font-semibold leading-tight dark:text-white dark:opacity-60";
-const VAL = "mb-0 text-sm leading-normal dark:text-white";
+const FILTERS = [
+  { id: "all", label: "Semua" },
+  { id: "danger", label: "Bahaya" },
+  { id: "warn", label: "Waspada" },
+  { id: "safe", label: "Info" },
+];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
 
-function Cell({ label, children, color }) {
-  return (
-    <td className={TD}>
-      <div className="text-center">
-        <p className={LBL}>{label}</p>
-        <h6 className={VAL} style={color ? { color } : undefined}>{children}</h6>
-      </div>
-    </td>
-  );
+// "2026-11-23 17:17:10" -> { date: "23 Nov 2026", clock: "17:17:10" }. Format lain dibiarkan apa adanya.
+function splitWhen(value) {
+  const text = String(value ?? "");
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)/);
+  if (!match) return { date: "", clock: text || "-" };
+  return { date: `${Number(match[3])} ${MONTHS[Number(match[2]) - 1] || match[2]} ${match[1]}`, clock: match[4] };
 }
 
 export default function DetectionHistory({ detections }) {
+  const [filter, setFilter] = useState("all");
+
+  const counts = useMemo(() => {
+    const result = { all: detections.length, danger: 0, warn: 0, safe: 0 };
+    detections.forEach((item) => { result[toneOf(item)] += 1; });
+    return result;
+  }, [detections]);
+
+  const rows = filter === "all" ? detections : detections.filter((item) => toneOf(item) === filter);
+
   return (
-    <div className="w-full max-w-full px-3 mt-0 mb-6 lg:mb-0 lg:w-7/12 lg:flex-none">
-      <div className="relative flex flex-col min-w-0 break-words bg-white border-0 border-solid shadow-xl dark:bg-slate-850 dark:shadow-dark-xl rounded-2xl bg-clip-border">
-        <div className="p-4 pb-0 mb-0 rounded-t-4">
-          <h6 className="mb-2 dark:text-white">Riwayat deteksi</h6>
+    <section className="vc-panel" id="riwayat" aria-labelledby="riwayat-title">
+      <div className="vc-panel-head">
+        <div>
+          <h2 className="vc-panel-title" id="riwayat-title">Riwayat deteksi</h2>
+          <p className="vc-panel-sub">
+            {detections.length ? `${detections.length} deteksi terakhir dari rompi` : "Objek yang terdeteksi rompi akan muncul di sini"}
+          </p>
         </div>
-        <div className="overflow-x-auto">
-          <table className="items-center w-full mb-4 align-top border-collapse border-gray-200 dark:border-white/40">
-            <tbody>
-              {detections.map((d, i) => (
-                <tr key={i}>
-                  <td className={`${TD} w-3/10`}>
-                    <div className="flex items-center px-2 py-1">
-                      <div className="inline-block w-8 h-8 text-center rounded-xl" style={{ background: COLOR[d.urgency] }}>
-                        <i className={`ni ${ICON[d.object] || "ni-bell-55"} text-white relative top-0.75 text-xxs`}></i>
-                      </div>
-                      <div className="ml-6"><p className={LBL}>Objek:</p><h6 className={VAL}>{d.object}</h6></div>
-                    </div>
-                  </td>
-                  <Cell label="Waktu:">{d.time}</Cell>
-                  <Cell label="Jarak:">{fmt(d.distance)} m</Cell>
-                  <Cell label="Urgensi:" color={COLOR[d.urgency]}>{d.urgency}</Cell>
-                </tr>
-              ))}
-              {!detections.length && (
-                <tr><td className={`${TD} text-center text-sm text-slate-500`} colSpan={4}>Belum ada riwayat deteksi.</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+        {detections.length > 0 && (
+          <div className="vc-filters" role="group" aria-label="Filter tingkat risiko">
+            {FILTERS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className="vc-filter"
+                aria-pressed={filter === item.id}
+                onClick={() => setFilter(item.id)}
+              >
+                {item.label} <i>{counts[item.id]}</i>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
-    </div>
+
+      {detections.length === 0 ? (
+        <div className="vc-empty vc-tone-idle">
+          <span className="vc-seg-chip"><Icon name="clock" size={20} /></span>
+          <strong>Belum ada riwayat deteksi</strong>
+          <span>Tekan tombol Deteksi di pojok kanan bawah untuk mencoba dari kamera.</span>
+        </div>
+      ) : (
+        <>
+          <div className="vc-hist-head" aria-hidden="true">
+            <span />
+            <span>Objek</span>
+            <span>Tanggal</span>
+            <span>Waktu</span>
+            <span>Jarak</span>
+            <span>Arah</span>
+            <span>Risiko</span>
+          </div>
+          {rows.length === 0 ? (
+            <div className="vc-empty vc-tone-idle">
+              <strong>Tidak ada deteksi pada kategori ini</strong>
+              <span>Pilih kategori lain untuk melihat riwayat.</span>
+            </div>
+          ) : (
+            <ul className="vc-history">
+              {rows.map((d, i) => {
+                const tone = toneOf(d);
+                const when = splitWhen(d.time);
+                return (
+                  <li key={d.id || `${d.object}-${d.time}-${i}`} className={`vc-hist-item vc-tone-${tone}`}>
+                    <span className="vc-hist-icon"><Icon name={OBJECT_ICON[d.object] || "alert"} size={20} /></span>
+                    <div style={{ minWidth: 0 }}>
+                      <p className="vc-hist-name">{d.object}</p>
+                      <p className="vc-hist-meta">
+                        <span>{[when.date, when.clock].filter(Boolean).join(" · ")}</span>
+                        <span>{fmt(d.distance)} m</span>
+                        {d.arah ? <span>{d.arah}</span> : null}
+                      </p>
+                    </div>
+                    <span className="vc-hist-cell">{when.date || "-"}</span>
+                    <span className="vc-hist-cell">{when.clock}</span>
+                    <span className="vc-hist-cell"><b>{fmt(d.distance)} m</b></span>
+                    <span className="vc-hist-cell" style={{ textTransform: "capitalize" }}>{d.arah || "-"}</span>
+                    <span className="vc-badge vc-hist-badge">{levelLabel(d)}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </>
+      )}
+    </section>
   );
 }

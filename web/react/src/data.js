@@ -26,6 +26,7 @@ export const initialState = {
   device: { online: false, battery: null, name: null, studentName: null, school: null },
   position: null,
   detections: [],
+  detectionsUpdatedAt: 0,
   history: [],
   telemetry: null,
   telemetryOnline: false,
@@ -73,3 +74,15 @@ export function normalizeDetections(payload) {
     };
   });
 }
+
+// Nada visual per tingkat urgensi / level (dipakai kelas .vc-tone-* di index.css)
+export const URGENCY_TONE = { Tinggi: "danger", Sedang: "warn", Rendah: "safe" };
+export const LEVEL_TONE = { BAHAYA: "danger", WASPADA: "warn", INFO: "safe", AMAN: "safe" };
+export const toneOf = (item) => LEVEL_TONE[item?.level] || URGENCY_TONE[item?.urgency] || "warn";
+
+// Label tingkat risiko yang seragam di seluruh dashboard: Bahaya, Waspada, Info
+export const levelLabel = (item) => {
+  const text = String(item?.level || item?.urgency || "");
+  const map = { TINGGI: "Bahaya", SEDANG: "Waspada", RENDAH: "Info", AMAN: "Info" };
+  return map[text.toUpperCase()] || (text ? text[0].toUpperCase() + text.slice(1).toLowerCase() : "-");
+};

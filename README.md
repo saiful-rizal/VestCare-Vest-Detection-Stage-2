@@ -395,7 +395,7 @@ Jika klip gerak belum tersedia, sistem memakai fallback `benda_{kelas}_{arah}_ne
 1. Browser membuka `/` atau `/app`. FastAPI menyajikan build React dari `web/react/dist/`.
 2. Jika `VEST_API_KEY` aktif, server memasang cookie sesi HttpOnly bernama `vestcare_sesi`.
 3. Komponen `CameraCapture` membuka kamera dan mengirim frame ke `POST /deteksi` sekitar satu kali per detik. Pratinjau mempertahankan seluruh bidang gambar (tanpa crop/zoom), dan model membatasi deteksi ke lima kelas target: pohon, mobil, motor, orang, dan lubang.
-4. Firmware ESP32-S3 N16R8 dengan OV3660 juga dapat mengambil gambar dan mengirim JPEG ke `POST /deteksi` dengan header `X-API-Key`. Hasilnya disimpan ke riwayat server dan ditampilkan pada dashboard; gambar ESP32 tidak disiarkan sebagai video langsung.
+4. Firmware ESP32-S3 N16R8 dengan OV3660 mengirim JPEG untuk inferensi ke `POST /deteksi` dan frame preview ke `POST /api/esp32/frame`, menggunakan header `X-API-Key`. Dashboard mengambil snapshot terbaru melalui `GET /api/esp32/frame/latest` dan hasil/bounding box melalui `GET /api/deteksi/latest`; frame tidak ditumpuk dalam antrean.
 5. Setiap request divalidasi dengan `X-API-Key` atau cookie sesi. Ukuran gambar dibatasi 10 MB dan resolusi 40 megapiksel.
 6. Server menjalankan YOLO26n-seg, fuzzy Sugeno, pelacak gerak, dan perencana suara.
 7. Respons berisi daftar deteksi, level tertinggi, urgensi, status ragu, dan rencana suara.
@@ -408,9 +408,9 @@ Jika klip gerak belum tersedia, sistem memakai fallback `benda_{kelas}_{arah}_ne
 13. Frame dengan signature objek, level, dan arah yang sama dilewati selama 10 detik untuk mencegah duplikasi.
 14. Dashboard membaca `devices`, `detections`, dan `gps_log` melalui `GET /dashboard/data`. Server memakai service-role key dan cookie sesi HttpOnly, sehingga kunci rahasia tidak pernah masuk ke browser.
 15. Jika Supabase belum lengkap atau sedang offline, dashboard memakai fallback `GET /riwayat`.
-16. Dashboard memuat ulang perangkat dan riwayat setiap 10 detik, sedangkan telemetri Wemos didorong lewat SSE `GET /api/telemetri/stream` setiap kali alat mengirim data (atau polling 1 detik bila SSE terputus). Hasil dari kamera browser tampil langsung; hasil kamera ESP32-S3 tampil setelah refresh data dashboard berikutnya.
+16. Dashboard memuat ulang perangkat dan riwayat setiap 10 detik. Telemetri didorong lewat SSE dan tetap dipolling setiap 500 ms agar tunnel yang menahan SSE tidak membuat status macet. Status rompi online jika telemetri atau frame kamera baru diterima dalam 15 detik; dashboard memeriksa snapshot dan hasil deteksi ESP32 setiap 150 ms.
 
-Audio bukan diputar saat dashboard dimulai. Setelah deteksi objek, `POST /deteksi` mengembalikan rencana suara yang dipilih dari cache Ardi di `data/runtime/audio/cache_ardi`; `CameraCapture` memutar segmen yang sesuai dengan objek dan hasil deteksi melalui `GET /suara/{nama_berkas}`.
+Audio bukan diputar saat dashboard dimulai. Saat kamera ESP32 aktif, peringatan dari `POST /deteksi` diputar melalui output audio browser dan tidak diulang pada setiap frame. TWS dapat dipakai bila dipasangkan ke ponsel/komputer yang membuka dashboard dan dipilih sebagai output audio. ESP32-S3 tidak mengirim audio langsung ke TWS.
 
 ### Tabel alur data
 
@@ -460,8 +460,14 @@ Backend, dibaca dari `.env` root:
 | `VEST_CONF_RAGU` | Ambang penanda ragu, default 0,50 |
 | `VEST_SUARA_FOLDER` | Folder pustaka suara, default `data/runtime/audio/cache_ardi` |
 | `VEST_RIWAYAT_PATH` | Path riwayat JSONL, default `data/runtime/riwayat.jsonl` |
-| `VEST_HOST` | Host server, default `127.0.0.1` |
+| `VEST_RIWAYAT_MAX_BYTES` | Batas ukuran riwayat sebelum diputar, default 5 MB (minimum 256 KB) |
+| `VEST_RIWAYAT_KEEP_ENTRIES` | Jumlah entri terbaru yang disimpan saat rotasi, default 4.000 |
+| `VEST_CORS_ORIGINS` | Daftar origin frontend terpisah dipisah koma; default `*` untuk same-origin |
+| `VEST_PUBLIC_URL` | URL HTTPS publik eksplisit untuk balasan discovery ESP32; jika kosong, API memakai `RAILWAY_PUBLIC_DOMAIN` di Railway |
+| `VEST_HOST` | Host server, default `0.0.0.0` |
 | `VEST_PORT` | Port server, default `8080` |
+| `PORT` | Port yang disediakan platform deploy seperti Railway; mengesampingkan `VEST_PORT` |
+| `VEST_ENABLE_LAN_DISCOVERY` | Aktifkan listener UDP LAN; default aktif lokal dan dimatikan dalam image Railway |
 | `GOOGLE_MAPS_API_KEY` | Kunci Google Maps JavaScript API untuk marker, jejak, dan objek realtime; bila kosong dashboard memakai mode embed |
 | `VEST_MAP_DEFAULT_LAT` | Latitude pusat peta saat GPS belum fix, default `-8.1689` |
 | `VEST_MAP_DEFAULT_LNG` | Longitude pusat peta saat GPS belum fix, default `113.7020` |
@@ -484,6 +490,9 @@ Frontend, dibaca dari `web/react/.env.local`:
 |---|---|---|
 | `GET` | `/info` | Info versi, model, `imgsz`, `conf`, `conf_ragu`, status engine |
 | `GET` | `/status` | Status server, engine, suara, dan koneksi Supabase |
+| `GET` | `/sesi` | Perbarui cookie sesi browser tanpa memuat ulang dashboard |
+| `GET` | `/healthz` | Liveness probe proses API |
+| `GET` | `/readyz` | Readiness probe engine, API key, dan dashboard |
 | `GET` | `/` | Dashboard React VestCare |
 | `GET` | `/app` | Alias dashboard React VestCare |
 | `GET` | `/docs` | Dokumentasi OpenAPI |
@@ -492,6 +501,12 @@ Frontend, dibaca dari `web/react/.env.local`:
 | `POST` | `/api/telemetri` | Telemetri jarak dan GPS dari Wemos; endpoint publik tanpa API key |
 | `GET` | `/api/telemetri` | Telemetri terakhir, status online, dan jejak GPS |
 | `GET` | `/api/telemetri/stream` | Server-Sent Events telemetri realtime untuk peta Google Maps |
+| `GET` | `/api/deteksi/latest` | Hasil deteksi kamera terbaru dan status kesegarannya |
+| `GET` | `/api/deteksi/stream` | Server-Sent Events hasil deteksi terbaru |
+| `POST` | `/api/esp32/frame` | Menerima frame JPEG terbaru dari kamera ESP32 |
+| `GET` | `/api/esp32/frame/latest` | Snapshot JPEG terbaru dengan cache ETag |
+| `GET` | `/api/esp32/status` | Ketersediaan frame ESP32 untuk pemilihan sumber kamera dashboard |
+| `GET` | `/api/esp32/stream` | MJPEG stream frame ESP32 untuk klien non-browser |
 | `POST` | `/deteksi` | Upload gambar multipart dan `jarak_m` opsional |
 | `POST` | `/deteksi/suara` | Sama seperti `/deteksi`, dengan rencana suara |
 | `POST` | `/peringatan` | JSON `{ "skor_risiko": 0..1, "jarak_m": ... }` |
@@ -501,11 +516,30 @@ Frontend, dibaca dari `web/react/.env.local`:
 
 Jika `VEST_API_KEY` aktif, sertakan header `X-API-Key` pada setiap request yang diproteksi. Browser memakai cookie sesi HttpOnly yang dipasang saat halaman utama dibuka.
 
+### Pengujian dengan Postman
+
+Gunakan `http://127.0.0.1:8080` sebagai base URL lokal. Untuk menguji melalui
+Cloudflare Quick Tunnel, gunakan URL HTTPS yang dicetak oleh `server.py`.
+
+1. `GET /status` memeriksa kesiapan server dan model.
+2. `POST /deteksi` memakai **Body → form-data**: `gambar` bertipe **File** dan
+   `jarak_m` bertipe **Text** (opsional, dalam meter). Jangan mengatur
+   `Content-Type` secara manual; Postman akan menambahkan multipart boundary.
+3. Jika `VEST_API_KEY` diaktifkan, tambahkan header `X-API-Key` dengan nilai dari
+   `.env` untuk request yang diproteksi.
+4. `GET /riwayat?limit=20` menampilkan hasil terbaru dalam bentuk JSON
+   `{"total": ..., "ditampilkan": ..., "data": [...]}`.
+
+Respons `POST /deteksi` berisi `id`, `waktu`, `sumber`, ringkasan hasil inferensi,
+daftar `deteksi`, dan status sinkronisasi Supabase. Jika upload gagal, periksa
+status HTTP dan field `detail` pada respons validasi FastAPI.
+
 ## Struktur proyek
 
 | Path | Fungsi |
 |---|---|
-| `server_rest_api.py` | Server FastAPI, engine YOLO, fuzzy, suara, riwayat, Supabase, dan tunnel ngrok |
+| `server.py` | Entry point untuk menjalankan API, dashboard, Cloudflare Quick Tunnel, dan UDP discovery ESP32 |
+| `server_rest_api.py` | Aplikasi FastAPI, endpoint, engine YOLO, fuzzy, suara, riwayat, dan Supabase |
 | `fuzzysugeno.py` | Fuzzy Sugeno, `analisis_hasil`, `PelacakGerak`, `IngatanHalangan`, dan penanda ragu |
 | `start_train.py` | Entry point pipeline training |
 | `train_semua.py` | Pipeline training 5 kelas, quality gate, evaluasi akhir, dan pembersihan run lama |
@@ -531,7 +565,9 @@ Jika `VEST_API_KEY` aktif, sertakan header `X-API-Key` pada setiap request yang 
 - Python 3.10 atau lebih baru dan virtual environment `.venv`.
 - Dependensi utama: `ultralytics`, `fastapi`, `uvicorn`, `pillow`, `numpy`, `python-multipart`.
 - Untuk suara: `pip install -r library/suara-natural-ai/requirements_pemutar.txt`, membutuhkan `pygame-ce`.
-- Untuk tunnel publik: `ngrok` tersedia di `PATH`.
+- Untuk tunnel publik: `cloudflared` tersedia di `PATH`, terpasang pada lokasi
+  standar Windows `C:\Program Files (x86)\cloudflared\cloudflared.exe`, atau
+  ditetapkan melalui `CLOUDFLARED_EXECUTABLE`.
 - Node.js dan npm untuk membangun dashboard React.
 
 ### Training
@@ -584,19 +620,71 @@ cd web/react
 npm install
 npm run build
 cd ..\..
-python server_rest_api.py
+python server.py
 ```
 
-Dengan `VEST_HOST=0.0.0.0`, server dapat menerima koneksi dari Wemos pada jaringan Wi-Fi yang sama. URL utama ngrok langsung menampilkan dashboard React, sedangkan `/app` tetap menjadi alias. Dokumentasi interaktif tersedia di `/docs`. URL publik terakhir juga disimpan di `data/runtime/public_url.txt`. Build dashboard perlu diperbarui dengan `npm run build` setiap kali source React berubah.
+Dengan `VEST_HOST=0.0.0.0`, server dapat menerima koneksi lokal dan memulai Cloudflare Quick Tunnel. URL `trycloudflare.com` langsung menampilkan dashboard React, sedangkan `/app` tetap menjadi alias. Dokumentasi interaktif tersedia di `/docs`. URL publik terakhir juga disimpan di `data/runtime/public_url.txt`. ESP32-S3 memakai domain Railway sebagai default; untuk server lokal, set `VEST_USE_LAN_DISCOVERY=1` agar memakai discovery UDP port `4211` pada LAN yang sama. Build dashboard perlu diperbarui dengan `npm run build` setiap kali source React berubah.
 
-Peta dashboard memakai Google Maps. Isi `GOOGLE_MAPS_API_KEY` pada `.env` root dengan kunci Google Maps JavaScript API yang dibatasi untuk domain dashboard/ngrok. Kunci dibaca saat server berjalan melalui `/config`, jadi mengganti kunci tidak memerlukan build ulang. Bila kunci kosong atau ditolak, dashboard otomatis memakai Google Maps mode embed agar lokasi Wemos tetap terlihat.
+### Deploy Railway
+
+Dockerfile repository membangun dashboard React dan API FastAPI dalam satu
+service. `railway.json` menetapkan builder Dockerfile, health check `/readyz`,
+restart on failure, dan satu replica. `.railwayignore` mencegah virtualenv,
+dataset, dan hasil training ikut diunggah, tetapi tetap menyertakan
+`models/best.pt` dan pustaka audio. Peringatan deprecation untuk `railway.json`
+tidak menggagalkan deploy; migrasikan setelah service dibuat melalui perintah
+Railway CLI. Railway mempertahankan domain service saat restart/redeploy biasa;
+domain berubah hanya jika domain/service dihapus atau diganti. Sketch ESP32-S3
+memakai domain ini sebagai default; `VEST_SERVER_URL` di
+`hardware/arduino/esp32_s3/secrets.h` hanya perlu diisi untuk override.
+Alamat API tidak dapat ditemukan dari API key saja. Railway menyediakan
+`RAILWAY_PUBLIC_DOMAIN` setelah domain publik dibuat; API memakai nilai itu
+otomatis untuk balasan discovery jika `VEST_PUBLIC_URL` tidak diatur.
+
+1. Pastikan project dan environment terhubung (`railway link`), lalu jalankan
+   `railway up` untuk mengunggah dan deploy kode lokal. File `.railwayignore`
+   mengecualikan virtualenv dan data training yang tidak diperlukan.
+2. Pada service, buka **Settings → Networking → Public Networking** dan pilih
+   **Generate Domain** bila belum ada. Atur `VEST_API_KEY` sebagai Railway
+   Variable; nilainya harus sama dengan key di `secrets.h` ESP32.
+3. Set `VEST_MODEL_PATH=models/best.pt`. Atur `SUPABASE_URL` dan
+   `SUPABASE_SERVICE_ROLE_KEY` hanya jika Supabase dipakai.
+4. Untuk mempertahankan riwayat lokal, tambahkan Railway Volume pada `/data` dan
+   set `VEST_RIWAYAT_PATH=/data/riwayat.jsonl`. Tanpa volume, riwayat lokal
+   hilang saat container diganti; data live kamera/telemetri disimpan di memori.
+   Riwayat aktif dibatasi otomatis ke sekitar 5 MB (4.000 entri terbaru) dan
+   file sebelumnya disalin ke `riwayat.jsonl.1`.
+   Pustaka suara Ardi pada `data/runtime/audio/cache_ardi` disertakan dalam
+   image melalui `.dockerignore`; pastikan folder itu ada saat build (atau sudah
+   di-commit). Jika memakai volume tersendiri, set
+   `VEST_SUARA_FOLDER=/data/audio`; tanpa klip, inferensi dan kamera tetap jalan
+   tetapi audio dashboard dinonaktifkan dengan pesan yang jelas.
+5. Setelah service tersedia, jalankan `railway domain` untuk membuat domain
+   publik. Salin URL yang tampil (mis.
+   `https://nama-service.up.railway.app`) ke `VEST_SERVER_URL` bila ingin
+   override default, lalu build dan flash firmware. Domain service
+   tidak berubah saat redeploy biasa; jika domain dibuat ulang atau service
+   diganti, perbarui nilai firmware. Dashboard dan API menggunakan domain yang
+   sama, sehingga browser memakai cookie sesi same-origin.
+
+Di Railway Service Settings, atur health check path ke `/readyz`; service hanya
+siap ketika model, API key, dan hasil build dashboard tersedia. Pertahankan satu
+replica karena frame kamera dan telemetri live berada di memori proses. Gunakan
+resource CPU/RAM yang cukup untuk PyTorch CPU; latensi inferensi dan kestabilan
+jaringan menentukan kelancaran realtime, jadi tidak dapat dijamin nol gangguan.
+Untuk CPU kecil, turunkan `VEST_IMGSZ` (misalnya 416) agar hasil deteksi lebih
+cepat muncul; naikkan lagi bila akurasi lebih penting.
+Untuk menjalankan lokal, tetap gunakan `python server.py`; perintah itu yang
+menyalakan Cloudflare Quick Tunnel dan discovery UDP LAN.
+
+Peta dashboard memakai Google Maps. Isi `GOOGLE_MAPS_API_KEY` pada `.env` root dengan kunci Google Maps JavaScript API yang dibatasi untuk domain dashboard yang digunakan. Kunci dibaca saat server berjalan melalui `/config`, jadi mengganti kunci tidak memerlukan build ulang. Bila kunci kosong atau ditolak, dashboard otomatis memakai Google Maps mode embed agar lokasi perangkat tetap terlihat.
 
 ### Menghubungkan Wemos ke server dan dashboard
 
 1. Sambungkan komputer/server dan Wemos ke jaringan Wi-Fi yang sama. Jalankan server dengan `VEST_HOST=0.0.0.0` dan port yang sesuai.
-2. Saat portal konfigurasi `Wemos_Setup` muncul, isi Wi-Fi saja. URL server saat ini ditetapkan di `hardware/arduino/wemos/wemos.ino`; jika alamat ngrok berubah, perbarui `SERVER_URL` dan flash ulang firmware.
+2. Saat portal konfigurasi `Wemos_Setup` muncul, isi Wi-Fi saja. Wemos memakai URL tetap di `hardware/arduino/wemos/wemos.ino`; jika URL Quick Tunnel berubah, perbarui `SERVER_URL` ke URL dari `data/runtime/public_url.txt` dan flash ulang firmware. ESP32-S3 memakai domain Railway yang ditetapkan pada sketch/secrets header (bukan melalui portal); discovery UDP hanya untuk mode LAN lokal.
 3. Endpoint `POST /api/telemetri` menerima kiriman publik tanpa `VEST_API_KEY` agar Wemos tidak memerlukan konfigurasi key. Jangan gunakan endpoint ini untuk data sensitif: siapa pun yang mengetahui URL server dapat mengirim telemetri palsu. Endpoint API lain tetap mengikuti autentikasi server.
-4. Wemos mengirim jarak ultrasonik dan GPS melalui HTTPS ke `/api/telemetri` setiap 5 detik. Sertifikat TLS diverifikasi dan waktu sertifikat disinkronkan lewat NTP; jangan matikan verifikasi TLS. Dashboard di URL ngrok yang sama akan menampilkan status perangkat dan lokasi. Pada kunjungan browser pertama ke domain ngrok gratis, buka/konfirmasi halaman peringatan ngrok terlebih dahulu. Periksa Serial Monitor 115200 baud untuk status HTTP.
+4. Wemos mengirim jarak ultrasonik dan GPS melalui HTTPS ke `/api/telemetri` setiap 5 detik. Sertifikat TLS diverifikasi dan waktu sertifikat disinkronkan lewat NTP; jangan matikan verifikasi TLS. Dashboard pada URL Cloudflare yang sama akan menampilkan status perangkat dan lokasi. Periksa Serial Monitor 115200 baud untuk status HTTP.
 
 Wemos hanya menyimpan kredensial Wi-Fi melalui WiFiManager. Firmware memverifikasi HTTPS menggunakan trust anchor ISRG Root X2. Jika koneksi gagal, periksa detail `[TLS] BearSSL` dan waktu perangkat di Serial Monitor; jangan menonaktifkan verifikasi sertifikat.
 

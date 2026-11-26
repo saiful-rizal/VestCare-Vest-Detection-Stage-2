@@ -1,0 +1,26 @@
+.git
+.venv
+.venv/
+.venv-lama
+.venv-lama/
+node_modules/
+**/node_modules/
+**/__pycache__/
+**/*.pyc
+.env
+.env.*
+**/.env
+**/.env.*
+**/secrets.h
+data/archive/
+data/datasets/
+data/results/
+# Runtime: simpan hanya pustaka suara Ardi di image; riwayat & cache lain
+# tetap ditulis saat container berjalan (dan bisa dipasang volume).
+data/runtime/*
+!data/runtime/audio/
+!data/runtime/audio/**
+models/*.pt
+!models/best.pt
+yolo26n-seg.pt
+web/react/dist/

@@ -1,12 +1,31 @@
 #include "esp_camera.h"
 #include "esp_http_server.h"
 #include <WiFi.h>
+#include <WiFiUdp.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <WiFiManager.h>
-#include <Preferences.h>
+#include <esp_random.h>
+#include <esp_wifi.h>
+#include <freertos/FreeRTOS.h>
+#include <psa/crypto.h>
+#include <stdlib.h>
+#include <string.h>
 #include <time.h>
+#include <lwip/sockets.h>
+#include <HardwareSerial.h>
 #include "secrets.h"
+
+#ifndef VEST_SERVER_URL
+#define VEST_SERVER_URL ""
+#endif
+
+#ifndef VEST_USE_LAN_DISCOVERY
+#define VEST_USE_LAN_DISCOVERY 0
+#endif
+
+const char* const DEFAULT_RAILWAY_URL =
+    "https://vestcare-detection-object-production.up.railway.app";
 
 #define PWDN_GPIO_NUM     -1
 #define RESET_GPIO_NUM    -1
@@ -31,48 +50,104 @@
 #define FLASH_LED_PIN      2
 #define RESET_PIN          0
 
-#define FRAME_W 320
-#define FRAME_H 240
+const uint16_t PORT_DISCOVERY_UDP = 4211;
+const uint16_t PORT_DISCOVERY_CLIENT = 4212;
+
+#define MODE_STREAM_SAJA  0
+
+#define ENABLE_ULTRASONIC 1
+#define ENABLE_GPS        1
+
+#define TRIG_PIN    21
+#define ECHO_PIN    47
+#define GPS_RX_PIN  41
+#define GPS_TX_PIN  42
+#define GPS_BAUD    9600
+
+const unsigned long JEDA_TELEMETRI = 1000;
+const unsigned long JEDA_UPLOAD_FRAME_MS = 250;
+const float SUHU_UDARA = 28.0f;
+const float JARAK_MIN_M = 0.05f;
+const float JARAK_MAX_M = 3.50f;
+const int SAMPEL_TOTAL = 5;
+const int SAMPEL_VALID_MIN = 3;
+const float TOLERANSI_SEBARAN_M = 0.03f;
+
+#if ENABLE_GPS
+#include <TinyGPSPlus.h>
+TinyGPSPlus gps;
+HardwareSerial GPSSerial(1);
+SemaphoreHandle_t gpsMutex = NULL;
+#endif
 
 const char* DEVICE_ID = "esp32s3-camera";
 const char* PATH_API = "/deteksi";
-const unsigned long JEDA_ULANG_KIRIM = 3000;
-const unsigned long JEDA_DETEKSI = 800;
+const char* PATH_FRAME = "/api/esp32/frame";
+const char* PATH_TELEMETRI = "/api/telemetri";
+const char* PATH_REGISTRASI_STREAM = "/api/esp32/stream";
+
+// "true" = minta server memakai jalur cepat/realtime.
+const char* MODE_REALTIME_DETEKSI = "true";
+
+// Sisakan heap internal untuk koneksi HTTPS/TLS.
+#define N_WORKER_DETEKSI 1
+
+// Alert satu arah ke ESP32 klasik pengelola TWS (UART 3.3V, TX saja).
+// ALERT_TX_PIN -> GPIO16 (RX2) ESP32 klasik, dan GND bersama.
+#define ENABLE_ALERT_UART 1
+#define ALERT_TX_PIN 14
+#define ALERT_BAUD 115200
+
+// ---- Penyetelan kelancaran ----
+#define KUALITAS_JPEG             14   // angka lebih besar = file lebih kecil, lebih mulus
+#define WIFI_HT40                  0   // 1 = coba kanal 40 MHz (lebih cepat, kurang tahan interferensi)
+const unsigned long JEDA_ULANG_KIRIM = 500;
+const unsigned long TLS_HANDSHAKE_TIMEOUT_SECONDS = 15;
+const unsigned long HTTP_CONNECT_TIMEOUT_MS = 15000;
+const unsigned long JEDA_DISCOVERY_GAGAL_MS = 15000;
 const time_t WAKTU_TLS_MINIMUM = 1780000000;
 
-const char SERTIFIKAT_ROOT_YE[] PROGMEM = R"PEM(
------BEGIN CERTIFICATE-----
-MIICpjCCAiugAwIBAgIRAIchZfw0tuX7qK3Vs3BftTowCgYIKoZIzj0EAwMwTzEL
-MAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2VhcmNo
-IEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDIwHhcNMjYwNTEzMDAwMDAwWhcN
-MzIwOTAyMjM1OTU5WjAuMQswCQYDVQQGEwJVUzENMAsGA1UEChMESVNSRzEQMA4G
-A1UEAxMHUm9vdCBZRTB2MBAGByqGSM49AgEGBSuBBAAiA2IABDwS/6vhrcVqcbBo
-+wgdI3fwn9x7DNJJOY/lTOti0vkwuRN87RhEhTH17E7XyFjWsPYhIPt/wzOqxTd2
-b+4ZJNy9ID04YywF9U5zasDVyGSNErVNtz8uSGh5izW87j77GaOB6zCB6DAOBgNV
-HQ8BAf8EBAMCAQYwEwYDVR0lBAwwCgYIKwYBBQUHAwEwDwYDVR0TAQH/BAUwAwEB
-/zAdBgNVHQ4EFgQUo8gmWo6hTNA1Y/ybI8g6rlbzT1YwHwYDVR0jBBgwFoAUfEKW
-rt5LSDv6kviejM9ti6lyN5UwMgYIKwYBBQUHAQEEJjAkMCIGCCsGAQUFBzAChhZo
-dHRwOi8veDIuaS5sZW5jci5vcmcvMBMGA1UdIAQMMAowCAYGZ4EMAQIBMCcGA1Ud
-HwQgMB4wHKAaoBiGFmh0dHA6Ly94Mi5jLmxlbmNyLm9yZy8wCgYIKoZIzj0EAwMD
-aQAwZgIxAMU19WCtmxVND8UHBZRoma49Z7jPs64Dma0eTu1OChVbB/2J7GV3nvYK
-Ax54uk1G9QIxAO0miLVJu8PLNiXXXkiE/gsK3CTRTF/aeo4bMX42Zw40csRU6AC2
-6hSW1/IWaas6dg==
------END CERTIFICATE-----
-)PEM";
+// Batas ukuran satu frame JPEG QVGA (biasanya 8-25 KB)
+const size_t FRAME_MAKS = 60 * 1024;
+
+// ---------------------------------------------------------------
+// Frame bersama: HANYA captureTask yang memanggil esp_camera_fb_get().
+// Konsumen dibangunkan lewat semaphore saat frame baru siap (tanpa polling).
+// ---------------------------------------------------------------
+#define MAKS_PELANGGAN 8
+uint8_t* frameTerbaru = NULL;
+size_t ukuranTerbaru = 0;
+uint32_t idTerbaru = 0;
+SemaphoreHandle_t frameMutex = NULL;
+SemaphoreHandle_t pelangganFrame[MAKS_PELANGGAN] = {NULL};
+volatile int klienLokal = 0;
 
 String hasilDeteksi = "";
-uint8_t* frameAntrian = NULL;
-size_t ukuranFrameAntrian = 0;
-uint32_t nomorAntrian = 0;
-bool adaAntrian = false;
+String hasilJson = "";
+volatile uint32_t jumlahFrameStream = 0;
+volatile uint32_t jumlahFrameKamera = 0;
+volatile uint32_t jumlahFrameUpload = 0;
+volatile uint32_t jumlahDeteksi = 0;
+volatile uint32_t latensiDeteksiMs = 0;
+unsigned long waktuHasil = 0;
+uint32_t seqHasil = 0;
+uint32_t idDeteksiDiambil = 0;
+uint32_t idHasilTerapan = 0;
+#if ENABLE_ALERT_UART
+HardwareSerial AlertSerial(2);
+#endif
 
-String serverUrl = "";
-String apiKey = "";
-bool simpanKonfigurasi = false;
-
-Preferences prefs;
+String serverUrl = VEST_SERVER_URL[0] != '\0'
+    ? VEST_SERVER_URL
+    : (VEST_USE_LAN_DISCOVERY ? "" : DEFAULT_RAILWAY_URL);
+String apiKey = VEST_API_KEY;
+const bool URL_SERVER_TETAP =
+    VEST_SERVER_URL[0] != '\0' || !VEST_USE_LAN_DISCOVERY;
+volatile bool discoverySegeraDiminta = false;
+portMUX_TYPE discoveryRequestMux = portMUX_INITIALIZER_UNLOCKED;
 
 SemaphoreHandle_t dataMutex = NULL;
+SemaphoreHandle_t urlMutex = NULL;
 
 httpd_handle_t webServer = NULL;
 httpd_handle_t streamServer = NULL;
@@ -91,15 +166,25 @@ body {
     margin: 20px;
     background: #f5f5f5;
 }
-h2 {
-    color: #222;
-}
-#stream {
-    width: 320px;
-    height: 240px;
-    border: 2px solid #333;
+h2 { color: #222; }
+.wrap {
+    position: relative;
+    width: 640px;
+    max-width: 100%;
+    aspect-ratio: 4 / 3;
+    margin: 0 auto;
+    outline: 2px solid #333;
     background: #111;
 }
+#stream, #overlay {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+#overlay { pointer-events: none; }
 .control {
     margin: 20px auto;
     width: 320px;
@@ -113,8 +198,6 @@ h2 {
     width: 100%;
     padding: 10px;
     box-sizing: border-box;
-}
-textarea {
     resize: vertical;
 }
 button {
@@ -126,7 +209,17 @@ button {
 </head>
 <body>
 <h2>ESP32-S3 VestCare Detector</h2>
-<img id="stream">
+<div class="wrap">
+    <img id="stream">
+    <canvas id="overlay" width="640" height="480"></canvas>
+</div>
+<div id="info" style="font-size:13px;color:#555;margin-top:8px"></div>
+<div class="control">
+    <label><input type="checkbox" onchange="toggleSuara(this)"> Suara browser lokal</label>
+    <div style="font-size:12px;color:#666;margin-top:6px">
+        Klip suara Ardi diputar dari dashboard VestCare, bukan dari halaman lokal ESP32.
+    </div>
+</div>
 <div class="control">
     <label>LED Flash</label>
     <input type="range" min="0" max="255" value="0" oninput="setFlash(this.value)">
@@ -142,15 +235,11 @@ button {
 document.getElementById("stream").src =
     "http://" + window.location.hostname + ":81/stream";
 
-function setFlash(val) {
-    fetch("/led?val=" + val);
-}
+function setFlash(val) { fetch("/led?val=" + val); }
 
 function copyResult() {
     const box = document.getElementById("detectionResult");
-    if (box.value) {
-        navigator.clipboard.writeText(box.value);
-    }
+    if (box.value) navigator.clipboard.writeText(box.value);
 }
 
 function clearResult() {
@@ -158,49 +247,216 @@ function clearResult() {
     fetch("/result?clear=1");
 }
 
-setInterval(() => {
-    fetch("/result")
-    .then(response => response.text())
-    .then(data => {
-        if (data.length > 0) {
-            document.getElementById("detectionResult").value = data;
+async function pollResult() {
+    try {
+        const r = await fetch("/result", { cache: "no-store" });
+        const data = await r.text();
+        if (data.length > 0) document.getElementById("detectionResult").value = data;
+    } catch (e) {}
+    setTimeout(pollResult, 500);
+}
+pollResult();
+
+// ---------- Bounding box (dengan penghalusan gerak) ----------
+const BOX_FORMAT = "xyxy";   // ganti "xywh" jika server mengirim [x, y, w, h]
+const SRC_W = 320;           // ukuran frame yang dikirim ESP32 (QVGA)
+const SRC_H = 240;
+const UMUR_MAKS_MS = 1500;   // kotak lebih tua dari ini dihapus
+const KONSTANTA_WAKTU = 50;  // ms; makin kecil = kotak makin cepat mengikuti
+const cv = document.getElementById("overlay");
+const ctx = cv.getContext("2d");
+
+function num(v) {
+    v = Number(v);
+    return isFinite(v) ? v : null;
+}
+
+function kotakDari(o) {
+    let b = o.bbox ?? o.box ?? o.xyxy ?? o.bounding_box ?? o.boundingBox ?? o.kotak ?? null;
+    if (b === null && ("x1" in o)) b = o;
+    if (b === null && ("x" in o) && ("w" in o || "width" in o)) b = o;
+    if (b === null) return null;
+    let k = null;
+    if (Array.isArray(b) && b.length >= 4) {
+        const v = b.slice(0, 4).map(num);
+        k = BOX_FORMAT === "xywh" ? [v[0], v[1], v[0] + v[2], v[1] + v[3]] : v;
+    } else if (typeof b === "object") {
+        if ("x1" in b) {
+            k = [num(b.x1), num(b.y1), num(b.x2), num(b.y2)];
+        } else {
+            const x = num(b.x ?? b.left), y = num(b.y ?? b.top);
+            const w = num(b.w ?? b.width), h = num(b.h ?? b.height);
+            if (x !== null && y !== null && w !== null && h !== null) k = [x, y, x + w, y + h];
+        }
+    }
+    return k && k.every(n => n !== null) ? k : null;
+}
+
+function kumpulkan(node, hasil) {
+    if (Array.isArray(node)) {
+        node.forEach(n => kumpulkan(n, hasil));
+        return;
+    }
+    if (!node || typeof node !== "object") return;
+    const k = kotakDari(node);
+    if (k) {
+        hasil.push({
+            k: k,
+            label: String(node.object ?? node.label ?? node.class ?? node.name ?? node.nama ?? ""),
+            conf: node.confidence ?? node.conf ?? node.score ?? null,
+            level: String(node.level ?? node.urgency ?? "").toUpperCase()
+        });
+        return;
+    }
+    Object.values(node).forEach(v => {
+        if (v && typeof v === "object") kumpulkan(v, hasil);
+    });
+}
+
+function warna(level) {
+    if (level === "BAHAYA" || level === "TINGGI") return "#e53935";
+    if (level === "WASPADA" || level === "SEDANG") return "#fb8c00";
+    return "#43a047";
+}
+
+function keCanvas(k, srcW, srcH) {
+    let [x1, y1, x2, y2] = k;
+    const normal = Math.max(x1, y1, x2, y2) <= 1.5;
+    const sx = normal ? cv.width : cv.width / srcW;
+    const sy = normal ? cv.height : cv.height / srcH;
+    return [x1 * sx, y1 * sy, x2 * sx, y2 * sy];
+}
+
+let boxes = [];
+let waktuData = 0;
+let seqTerakhir = -1;
+let suaraAktif = false;
+let suaraTerakhir = 0;
+
+function pusat(k) { return [(k[0] + k[2]) / 2, (k[1] + k[3]) / 2]; }
+
+function perbarui(daftar, srcW, srcH) {
+    const baru = daftar.map(d => ({
+        t: keCanvas(d.k, srcW, srcH), label: d.label, conf: d.conf, level: d.level
+    }));
+    const dipakai = new Set();
+    baru.forEach(n => {
+        const [nx, ny] = pusat(n.t);
+        let terbaik = -1, jarak = cv.width * 0.4;
+        boxes.forEach((o, i) => {
+            if (dipakai.has(i) || o.label !== n.label) return;
+            const [ox, oy] = pusat(o.t);
+            const j = Math.hypot(nx - ox, ny - oy);
+            if (j < jarak) { jarak = j; terbaik = i; }
+        });
+        if (terbaik >= 0) {
+            dipakai.add(terbaik);
+            n.c = boxes[terbaik].c;
+        } else {
+            n.c = n.t.slice();
         }
     });
-}, 500);
+    boxes = baru;
+}
+
+function suarakan(daftar) {
+    if (!suaraAktif || !("speechSynthesis" in window)) return;
+    const bahaya = daftar.find(d => d.level === "BAHAYA" || d.level === "TINGGI");
+    if (!bahaya) return;
+    const now = performance.now();
+    if (now - suaraTerakhir < 4000) return;
+    suaraTerakhir = now;
+    const u = new SpeechSynthesisUtterance("Awas, " + (bahaya.label || "bahaya"));
+    u.lang = "id-ID";
+    speechSynthesis.speak(u);
+}
+
+let tAnim = performance.now();
+function animasi(now) {
+    const dt = now - tAnim;
+    tAnim = now;
+    ctx.clearRect(0, 0, cv.width, cv.height);
+
+    if (now - waktuData > UMUR_MAKS_MS) {
+        boxes = [];
+    }
+    const a = 1 - Math.exp(-dt / KONSTANTA_WAKTU);
+    ctx.lineWidth = 3;
+    ctx.font = "bold 14px Arial";
+    ctx.textBaseline = "top";
+
+    boxes.forEach(d => {
+        for (let i = 0; i < 4; i++) d.c[i] += (d.t[i] - d.c[i]) * a;
+        const [x1, y1, x2, y2] = d.c;
+        const c = warna(d.level);
+        ctx.strokeStyle = c;
+        ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+        let teks = d.label;
+        if (d.conf !== null) {
+            const persen = d.conf <= 1 ? d.conf * 100 : d.conf;
+            teks += (teks ? " " : "") + Math.round(persen) + "%";
+        }
+        if (teks) {
+            const lebar = ctx.measureText(teks).width + 8;
+            const ty = y1 >= 20 ? y1 - 20 : y1;
+            ctx.fillStyle = c;
+            ctx.fillRect(x1, ty, lebar, 20);
+            ctx.fillStyle = "#fff";
+            ctx.fillText(teks, x1 + 4, ty + 3);
+        }
+    });
+    requestAnimationFrame(animasi);
+}
+requestAnimationFrame(animasi);
+
+async function pollBoxes() {
+    const info = document.getElementById("info");
+    try {
+        const r = await fetch("/boxes", { cache: "no-store" });
+        const res = await r.json();
+        if (res.data === null || res.umur > UMUR_MAKS_MS) {
+            boxes = [];
+            info.textContent = "Menunggu hasil deteksi";
+        } else {
+            if (res.seq !== seqTerakhir) {
+                seqTerakhir = res.seq;
+                waktuData = performance.now() - res.umur;
+                const d = res.data;
+                const sw = num(d && (d.image_width ?? d.img_w ?? d.frame_width)) || SRC_W;
+                const sh = num(d && (d.image_height ?? d.img_h ?? d.frame_height)) || SRC_H;
+                const daftar = [];
+                kumpulkan(d, daftar);
+                perbarui(daftar, sw, sh);
+                suarakan(daftar);
+            }
+            info.textContent = "Kotak terdeteksi: " + boxes.length +
+                " | usia hasil: " + res.umur + " ms";
+        }
+    } catch (e) {}
+    setTimeout(pollBoxes, 60);
+}
+pollBoxes();
+
+function toggleSuara(el) {
+    suaraAktif = el.checked;
+    if (suaraAktif && "speechSynthesis" in window) {
+        speechSynthesis.speak(new SpeechSynthesisUtterance("Suara peringatan aktif"));
+    }
+}
 </script>
 </body>
 </html>
 )rawliteral";
 
-String escapeJson(const String &s) {
-    String o;
-    o.reserve(s.length() + 8);
-
-    for (size_t i = 0; i < s.length(); i++) {
-        char c = s[i];
-
-        switch (c) {
-            case '"':  o += "\\\""; break;
-            case '\\': o += "\\\\"; break;
-            case '\n': o += "\\n";  break;
-            case '\r': o += "\\r";  break;
-            case '\t': o += "\\t";  break;
-            default:
-                if ((uint8_t)c < 0x20) {
-                    char b[7];
-                    snprintf(b, sizeof(b), "\\u%04x", c);
-                    o += b;
-                } else {
-                    o += c;
-                }
-        }
-    }
-
-    return o;
-}
-
 String urlBersih() {
-    String url = serverUrl;
+    String url;
+    if (urlMutex) {
+        xSemaphoreTake(urlMutex, portMAX_DELAY);
+        url = serverUrl;
+        xSemaphoreGive(urlMutex);
+    } else {
+        url = serverUrl;
+    }
     url.trim();
 
     while (url.endsWith("/")) {
@@ -210,9 +466,7 @@ String urlBersih() {
     return url;
 }
 
-bool urlServerValid() {
-    String url = urlBersih();
-
+bool urlValid(const String &url) {
     const bool https = url.startsWith("https://");
     const bool http = url.startsWith("http://");
 
@@ -228,36 +482,236 @@ bool urlServerValid() {
         && url.indexOf(' ', hostStart) < 0;
 }
 
-void muatKonfigurasi() {
-    prefs.begin("vestcare", true);
-    serverUrl = prefs.getString("url", "");
-    apiKey = prefs.getString("key", VEST_API_KEY);
-    prefs.end();
+bool urlServerValid() {
+    return urlValid(urlBersih());
 }
 
-void simpanKonfigurasiBaru(const char *url, const char *key) {
-    serverUrl = String(url);
-    apiKey = String(key);
-
-    prefs.begin("vestcare", false);
-    prefs.putString("url", serverUrl);
-    prefs.putString("key", apiKey);
-    prefs.end();
-
-    Serial.println("[SERVER] Konfigurasi server tersimpan.");
+bool ambilPermintaanDiscovery(bool bolehAmbil) {
+    bool diminta;
+    portENTER_CRITICAL(&discoveryRequestMux);
+    diminta = discoverySegeraDiminta;
+    if (diminta && bolehAmbil) {
+        discoverySegeraDiminta = false;
+    }
+    portEXIT_CRITICAL(&discoveryRequestMux);
+    return diminta && bolehAmbil;
 }
 
-void hapusKonfigurasi() {
-    prefs.begin("vestcare", false);
-    prefs.clear();
-    prefs.end();
+bool validasiTandaTanganUrl(const String &nonce, const String &url,
+                            const String &signatureHex) {
+    if (apiKey.length() < 32 || signatureHex.length() != 64) {
+        return false;
+    }
 
-    serverUrl = "";
-    apiKey = "";
+    uint8_t signature[32];
+    for (size_t i = 0; i < sizeof(signature); i++) {
+        const char high = signatureHex[i * 2];
+        const char low = signatureHex[i * 2 + 1];
+        const int highValue = high >= '0' && high <= '9'
+                                  ? high - '0'
+                                  : (high >= 'a' && high <= 'f' ? high - 'a' + 10 : -1);
+        const int lowValue = low >= '0' && low <= '9'
+                                 ? low - '0'
+                                 : (low >= 'a' && low <= 'f' ? low - 'a' + 10 : -1);
+        if (highValue < 0 || lowValue < 0) {
+            return false;
+        }
+        signature[i] = (uint8_t)((highValue << 4) | lowValue);
+    }
+
+    if (psa_crypto_init() != PSA_SUCCESS) {
+        Serial.println("[SERVER] Inisialisasi PSA untuk verifikasi URL gagal.");
+        return false;
+    }
+
+    psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_VERIFY_MESSAGE);
+    psa_set_key_algorithm(&attributes, PSA_ALG_HMAC(PSA_ALG_SHA_256));
+    psa_set_key_type(&attributes, PSA_KEY_TYPE_HMAC);
+    psa_set_key_bits(&attributes, apiKey.length() * 8);
+
+    psa_key_id_t keyId = 0;
+    const psa_status_t importStatus = psa_import_key(
+        &attributes,
+        (const uint8_t *)apiKey.c_str(),
+        apiKey.length(),
+        &keyId
+    );
+    psa_reset_key_attributes(&attributes);
+    if (importStatus != PSA_SUCCESS) {
+        Serial.printf("[SERVER] Impor kunci discovery gagal (PSA=%ld).\n", (long)importStatus);
+        return false;
+    }
+
+    const String message = nonce + "\n" + url;
+    const psa_status_t verifyStatus = psa_mac_verify(
+        keyId,
+        PSA_ALG_HMAC(PSA_ALG_SHA_256),
+        (const uint8_t *)message.c_str(),
+        message.length(),
+        signature,
+        sizeof(signature)
+    );
+    psa_destroy_key(keyId);
+    return verifyStatus == PSA_SUCCESS;
 }
 
-void tandaiKonfigurasiUntukDisimpan() {
-    simpanKonfigurasi = true;
+bool temukanUrlServer() {
+    if (WiFi.status() != WL_CONNECTED) {
+        return false;
+    }
+
+    WiFiUDP udp;
+    if (!udp.begin(PORT_DISCOVERY_CLIENT)) {
+        Serial.println("[SERVER] Gagal membuka UDP untuk discovery.");
+        return false;
+    }
+
+    uint8_t randomBytes[16];
+    esp_fill_random(randomBytes, sizeof(randomBytes));
+    char nonceBuffer[33];
+    for (size_t i = 0; i < sizeof(randomBytes); i++) {
+        snprintf(nonceBuffer + i * 2, 3, "%02x", randomBytes[i]);
+    }
+    nonceBuffer[32] = '\0';
+    const String nonce = nonceBuffer;
+    const String request = String("VESTCARE_DISCOVER_V1 ") + nonce;
+
+    if (!udp.beginPacket(IPAddress(255, 255, 255, 255), PORT_DISCOVERY_UDP)) {
+        udp.stop();
+        Serial.println("[SERVER] Gagal menyiapkan broadcast discovery UDP.");
+        return false;
+    }
+    udp.write((const uint8_t *)request.c_str(), request.length());
+    if (!udp.endPacket()) {
+        udp.stop();
+        Serial.println("[SERVER] Gagal mengirim broadcast discovery UDP.");
+        return false;
+    }
+
+    const unsigned long deadline = millis() + 1800;
+    while ((long)(deadline - millis()) > 0) {
+        const int packetSize = udp.parsePacket();
+        if (packetSize > 0) {
+            char packet[384] = {};
+            const int readSize = udp.read((uint8_t *)packet, sizeof(packet) - 1);
+            if (readSize > 0) {
+                packet[readSize] = '\0';
+                String response(packet);
+                response.trim();
+
+                const int line1 = response.indexOf('\n');
+                const int line2 = line1 < 0 ? -1 : response.indexOf('\n', line1 + 1);
+                const int line3 = line2 < 0 ? -1 : response.indexOf('\n', line2 + 1);
+                if (line1 > 0 && line2 > line1 && line3 > line2) {
+                    const String magic = response.substring(0, line1);
+                    const String responseNonce = response.substring(line1 + 1, line2);
+                    const String url = response.substring(line2 + 1, line3);
+                    const String signature = response.substring(line3 + 1);
+                    if (magic == "VESTCARE_URL_V1" &&
+                        responseNonce == nonce &&
+                        urlValid(url) &&
+                        url.startsWith("https://") &&
+                        validasiTandaTanganUrl(nonce, url, signature)) {
+                        String previousUrl = urlBersih();
+                        if (previousUrl != url) {
+                            xSemaphoreTake(urlMutex, portMAX_DELAY);
+                            serverUrl = url;
+                            xSemaphoreGive(urlMutex);
+                            Serial.println("[SERVER] Endpoint API ditemukan melalui discovery.");
+                        }
+                        udp.stop();
+                        return true;
+                    }
+                }
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+
+    udp.stop();
+    if (!urlServerValid()) {
+        Serial.println("[SERVER] Endpoint API belum ditemukan; coba lagi nanti.");
+    }
+    return false;
+}
+
+void siapkanKlienTls(WiFiClientSecure &client) {
+    client.useBuiltinCACertBundle();
+    client.setHandshakeTimeout(TLS_HANDSHAKE_TIMEOUT_SECONDS);
+}
+
+void cekJalurPublik() {
+    static unsigned long pemeriksaanTerakhir = 0;
+    static bool pernahMemeriksa = false;
+    static volatile bool sedangMemeriksa = false;
+    if (sedangMemeriksa) {
+        return;
+    }
+    if (pernahMemeriksa && millis() - pemeriksaanTerakhir < 30000) {
+        return;
+    }
+    sedangMemeriksa = true;
+    pernahMemeriksa = true;
+    pemeriksaanTerakhir = millis();
+
+    String url = urlBersih();
+    const int pemisahSkema = url.indexOf("://");
+    if (pemisahSkema < 0) {
+        sedangMemeriksa = false;
+        return;
+    }
+    const String host = url.substring(pemisahSkema + 3);
+
+    IPAddress alamat;
+    if (WiFi.hostByName(host.c_str(), alamat) != 1) {
+        Serial.printf("[NETCHECK] DNS gagal untuk %s\n", host.c_str());
+        sedangMemeriksa = false;
+        return;
+    }
+
+    WiFiClient probe;
+    const unsigned long mulai = millis();
+    const bool tcpTersambung = probe.connect(alamat, 443, 1200);
+    Serial.printf(
+        "[NETCHECK] DNS=%s TCP443=%s durasi=%lu ms\n",
+        alamat.toString().c_str(),
+        tcpTersambung ? "terbuka" : "gagal",
+        millis() - mulai
+    );
+    probe.stop();
+
+    if (!tcpTersambung) {
+        sedangMemeriksa = false;
+        return;
+    }
+
+    WiFiClientSecure tlsClient;
+    siapkanKlienTls(tlsClient);
+
+    HTTPClient http;
+    http.setConnectTimeout(HTTP_CONNECT_TIMEOUT_MS);
+    http.setTimeout(5000);
+    if (!http.begin(tlsClient, url + "/status")) {
+        Serial.println("[NETCHECK] Gagal memulai pemeriksaan HTTPS.");
+        sedangMemeriksa = false;
+        return;
+    }
+
+    const int status = http.GET();
+    if (status > 0) {
+        Serial.printf("[NETCHECK] HTTPS /status HTTP=%d\n", status);
+    } else {
+        Serial.printf(
+            "[NETCHECK] HTTPS /status gagal: %s\n",
+            http.errorToString(status).c_str()
+        );
+        char pesan[128] = {};
+        const int kode = tlsClient.lastError(pesan, sizeof(pesan));
+        Serial.printf("[NETCHECK] TLS error=%d: %s\n", kode, pesan);
+    }
+    http.end();
+    sedangMemeriksa = false;
 }
 
 void configModeCallback(WiFiManager *wm) {
@@ -268,6 +722,95 @@ void configModeCallback(WiFiManager *wm) {
     Serial.println(WiFi.softAPIP());
 }
 
+// ---------------------------------------------------------------
+// Frame bersama
+// ---------------------------------------------------------------
+SemaphoreHandle_t daftarFrame() {
+    SemaphoreHandle_t s = xSemaphoreCreateBinary();
+    if (!s) return NULL;
+    bool ok = false;
+    xSemaphoreTake(frameMutex, portMAX_DELAY);
+    for (int i = 0; i < MAKS_PELANGGAN; i++) {
+        if (pelangganFrame[i] == NULL) {
+            pelangganFrame[i] = s;
+            ok = true;
+            break;
+        }
+    }
+    xSemaphoreGive(frameMutex);
+    if (!ok) {
+        vSemaphoreDelete(s);
+        return NULL;
+    }
+    return s;
+}
+
+void batalDaftarFrame(SemaphoreHandle_t s) {
+    if (!s) return;
+    xSemaphoreTake(frameMutex, portMAX_DELAY);
+    for (int i = 0; i < MAKS_PELANGGAN; i++) {
+        if (pelangganFrame[i] == s) pelangganFrame[i] = NULL;
+    }
+    xSemaphoreGive(frameMutex);
+    vSemaphoreDelete(s);
+}
+
+void captureTask(void *pvParameters) {
+    while (true) {
+        camera_fb_t *fb = esp_camera_fb_get();
+        if (!fb) {
+            vTaskDelay(pdMS_TO_TICKS(5));
+            continue;
+        }
+
+        if (fb->format == PIXFORMAT_JPEG && fb->len > 0 && fb->len <= FRAME_MAKS) {
+            xSemaphoreTake(frameMutex, portMAX_DELAY);
+            memcpy(frameTerbaru, fb->buf, fb->len);
+            ukuranTerbaru = fb->len;
+            idTerbaru++;
+            for (int i = 0; i < MAKS_PELANGGAN; i++) {
+                if (pelangganFrame[i]) xSemaphoreGive(pelangganFrame[i]);
+            }
+            xSemaphoreGive(frameMutex);
+            jumlahFrameKamera++;
+        }
+        esp_camera_fb_return(fb);
+    }
+}
+
+// Menunggu frame yang lebih baru dari idTerakhir lalu menyalinnya ke tujuan.
+// Dengan sem != NULL, task tidur sampai captureTask membangunkannya.
+bool ambilFrameBaru(uint8_t *tujuan, size_t &panjang, uint32_t &idTerakhir,
+                    uint32_t timeoutMs, SemaphoreHandle_t sem,
+                    uint32_t *idOut = NULL) {
+    const unsigned long mulai = millis();
+    while (true) {
+        xSemaphoreTake(frameMutex, portMAX_DELAY);
+        if (idTerbaru != idTerakhir && ukuranTerbaru > 0) {
+            memcpy(tujuan, frameTerbaru, ukuranTerbaru);
+            panjang = ukuranTerbaru;
+            idTerakhir = idTerbaru;
+            if (idOut) *idOut = idTerbaru;
+            xSemaphoreGive(frameMutex);
+            return true;
+        }
+        xSemaphoreGive(frameMutex);
+
+        const unsigned long lewat = millis() - mulai;
+        if (lewat >= timeoutMs) {
+            return false;
+        }
+        if (sem) {
+            xSemaphoreTake(sem, pdMS_TO_TICKS(timeoutMs - lewat));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(4));
+        }
+    }
+}
+
+// ---------------------------------------------------------------
+// HTTP server lokal
+// ---------------------------------------------------------------
 static esp_err_t index_handler(httpd_req_t *req) {
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, INDEX_HTML, HTTPD_RESP_USE_STRLEN);
@@ -294,6 +837,7 @@ static esp_err_t result_handler(httpd_req_t *req) {
         if (strstr(query, "clear=1") != NULL) {
             xSemaphoreTake(dataMutex, portMAX_DELAY);
             hasilDeteksi = "";
+            hasilJson = "";
             xSemaphoreGive(dataMutex);
             return httpd_resp_send(req, "", 0);
         }
@@ -306,266 +850,548 @@ static esp_err_t result_handler(httpd_req_t *req) {
     xSemaphoreGive(dataMutex);
 
     httpd_resp_set_type(req, "text/plain");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, currentData.c_str(), currentData.length());
 }
 
+static esp_err_t boxes_handler(httpd_req_t *req) {
+    String json;
+    unsigned long waktu;
+    uint32_t seq;
+
+    xSemaphoreTake(dataMutex, portMAX_DELAY);
+    json = hasilJson;
+    waktu = waktuHasil;
+    seq = seqHasil;
+    xSemaphoreGive(dataMutex);
+
+    String out = "{\"seq\":";
+    out += seq;
+    out += ",\"umur\":";
+    out += json.length() ? (unsigned long)(millis() - waktu) : 999999UL;
+    out += ",\"data\":";
+    out += json.length() ? json : String("null");
+    out += "}";
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, out.c_str(), out.length());
+}
+
 static esp_err_t stream_handler(httpd_req_t *req) {
-    camera_fb_t *fb = NULL;
     esp_err_t res = ESP_OK;
-    char part_buf[64];
+    const size_t HEADROOM = 100;
+
+    uint8_t *buf = (uint8_t *)heap_caps_malloc(HEADROOM + FRAME_MAKS + 2,
+                                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) {
+        return ESP_FAIL;
+    }
+
+    int one = 1;
+    setsockopt(httpd_req_to_sockfd(req), IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
     httpd_resp_set_type(req, "multipart/x-mixed-replace;boundary=frame");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 
+    SemaphoreHandle_t sem = daftarFrame();
+    klienLokal++;
+
+    uint32_t idTerakhir = 0;
     while (true) {
-        fb = esp_camera_fb_get();
-
-        if (!fb) {
-            vTaskDelay(pdMS_TO_TICKS(10));
+        size_t panjang = 0;
+        if (!ambilFrameBaru(buf + HEADROOM, panjang, idTerakhir, 1000, sem)) {
             continue;
         }
 
-        if (fb->format != PIXFORMAT_JPEG) {
-            esp_camera_fb_return(fb);
-            res = ESP_FAIL;
-            break;
-        }
-
-        size_t hlen = snprintf(
-            part_buf,
-            sizeof(part_buf),
+        // Header + JPEG + CRLF disatukan dalam SATU kirim.
+        char hdr[HEADROOM];
+        const size_t hlen = snprintf(
+            hdr, sizeof(hdr),
             "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n",
-            (unsigned int)fb->len
+            (unsigned int)panjang
         );
+        uint8_t *awal = buf + HEADROOM - hlen;
+        memcpy(awal, hdr, hlen);
+        buf[HEADROOM + panjang] = '\r';
+        buf[HEADROOM + panjang + 1] = '\n';
 
-        res = httpd_resp_send_chunk(req, part_buf, hlen);
-
-        if (res == ESP_OK) {
-            res = httpd_resp_send_chunk(req, (const char*)fb->buf, fb->len);
-        }
-
-        if (res == ESP_OK) {
-            res = httpd_resp_send_chunk(req, "\r\n", 2);
-        }
-
-        esp_camera_fb_return(fb);
-
+        res = httpd_resp_send_chunk(req, (const char *)awal, hlen + panjang + 2);
         if (res != ESP_OK) {
             break;
         }
+        jumlahFrameStream++;
     }
 
+    klienLokal--;
+    batalDaftarFrame(sem);
+    heap_caps_free(buf);
     return res;
 }
 
 void startCameraServer() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
+    config.max_open_sockets = 5;
+    config.lru_purge_enable = true;
 
-    httpd_uri_t index_uri = {
-        .uri = "/",
-        .method = HTTP_GET,
-        .handler = index_handler,
-        .user_ctx = NULL
-    };
-
-    httpd_uri_t led_uri = {
-        .uri = "/led",
-        .method = HTTP_GET,
-        .handler = led_handler,
-        .user_ctx = NULL
-    };
-
-    httpd_uri_t result_uri = {
-        .uri = "/result",
-        .method = HTTP_GET,
-        .handler = result_handler,
-        .user_ctx = NULL
-    };
+    httpd_uri_t index_uri = { .uri = "/", .method = HTTP_GET, .handler = index_handler, .user_ctx = NULL };
+    httpd_uri_t led_uri = { .uri = "/led", .method = HTTP_GET, .handler = led_handler, .user_ctx = NULL };
+    httpd_uri_t result_uri = { .uri = "/result", .method = HTTP_GET, .handler = result_handler, .user_ctx = NULL };
+    httpd_uri_t boxes_uri = { .uri = "/boxes", .method = HTTP_GET, .handler = boxes_handler, .user_ctx = NULL };
 
     if (httpd_start(&webServer, &config) == ESP_OK) {
         httpd_register_uri_handler(webServer, &index_uri);
         httpd_register_uri_handler(webServer, &led_uri);
         httpd_register_uri_handler(webServer, &result_uri);
+        httpd_register_uri_handler(webServer, &boxes_uri);
     }
 
     httpd_config_t stream_config = HTTPD_DEFAULT_CONFIG();
     stream_config.server_port = 81;
     stream_config.ctrl_port += 1;
+    stream_config.core_id = 1;
+    stream_config.stack_size = 6144;
+    stream_config.lru_purge_enable = true;
+    stream_config.send_wait_timeout = 5;
 
-    httpd_uri_t stream_uri = {
-        .uri = "/stream",
-        .method = HTTP_GET,
-        .handler = stream_handler,
-        .user_ctx = NULL
-    };
+    httpd_uri_t stream_uri = { .uri = "/stream", .method = HTTP_GET, .handler = stream_handler, .user_ctx = NULL };
 
     if (httpd_start(&streamServer, &stream_config) == ESP_OK) {
         httpd_register_uri_handler(streamServer, &stream_uri);
     }
 }
 
-int kirimFrameHttp(WiFiClient &client, const String &endpoint,
-                   const uint8_t *frame, size_t frameSize) {
-    const char *boundary = "VestCareESP32S3Boundary";
-    String head = F("--VestCareESP32S3Boundary\r\n"
-                    "Content-Disposition: form-data; name=\"gambar\"; filename=\"frame.jpg\"\r\n"
-                    "Content-Type: image/jpeg\r\n\r\n");
-    String tail = F("\r\n--VestCareESP32S3Boundary\r\n"
-                    "Content-Disposition: form-data; name=\"mode_realtime\"\r\n\r\nfalse"
-                    "\r\n--VestCareESP32S3Boundary\r\n"
-                    "Content-Disposition: form-data; name=\"sesi\"\r\n\r\n");
-    tail += DEVICE_ID;
-    tail += F("\r\n--VestCareESP32S3Boundary--\r\n");
-
-    const size_t bodySize = head.length() + frameSize + tail.length();
-    uint8_t *body = (uint8_t *)heap_caps_malloc(bodySize, MALLOC_CAP_SPIRAM);
-    if (!body) {
-        Serial.println("[SERVER] Gagal mengalokasikan buffer frame.");
-        return -1;
-    }
-
-    size_t offset = 0;
-    memcpy(body + offset, head.c_str(), head.length());
-    offset += head.length();
-    memcpy(body + offset, frame, frameSize);
-    offset += frameSize;
-    memcpy(body + offset, tail.c_str(), tail.length());
-
+struct Koneksi {
+    WiFiClientSecure tls;
+    WiFiClient plain;
     HTTPClient http;
-    http.setTimeout(8000);
-    if (!http.begin(client, endpoint)) {
-        heap_caps_free(body);
-        Serial.println("[SERVER] Gagal memulai koneksi HTTP.");
+    String basis;
+    bool tlsSiap = false;
+};
+
+Koneksi koneksiApi;
+SemaphoreHandle_t koneksiApiMutex = NULL;
+
+void cetakErrorTls(WiFiClientSecure *client) {
+    if (client == NULL) {
+        return;
+    }
+    char pesan[128] = {};
+    const int kode = client->lastError(pesan, sizeof(pesan));
+    Serial.printf("[TLS] Detail error=%d: %s\n", kode, pesan);
+}
+
+int postReuse(Koneksi &k, const String &basis, const char *path,
+              const char *contentType, const uint8_t *body, size_t ukuran,
+              String *respons, uint32_t timeoutMs, const char *tag) {
+    const bool https = basis.startsWith("https://");
+
+    if (https && time(nullptr) < WAKTU_TLS_MINIMUM) {
+        Serial.printf("[%s] Menunggu sinkronisasi waktu NTP.\n", tag);
+        return -2;
+    }
+    xSemaphoreTake(koneksiApiMutex, portMAX_DELAY);
+    if (basis != k.basis) {
+        k.tls.stop();
+        k.plain.stop();
+        k.basis = basis;
+    }
+    if (https && !k.tlsSiap) {
+        siapkanKlienTls(k.tls);
+        k.tlsSiap = true;
+    }
+
+    const String endpoint = basis + path;
+    k.http.setReuse(true);
+    k.http.setConnectTimeout(HTTP_CONNECT_TIMEOUT_MS);
+    k.http.setTimeout(timeoutMs);
+
+    const bool mulai = https ? k.http.begin(k.tls, endpoint)
+                             : k.http.begin(k.plain, endpoint);
+    if (!mulai) {
+        Serial.printf("[%s] Gagal memulai koneksi HTTP.\n", tag);
+        xSemaphoreGive(koneksiApiMutex);
         return -1;
     }
 
-    http.addHeader("Content-Type", "multipart/form-data; boundary=VestCareESP32S3Boundary");
-    http.addHeader("ngrok-skip-browser-warning", "1");
+    k.http.addHeader("Content-Type", contentType);
+    k.http.addHeader("ngrok-skip-browser-warning", "1");
     if (apiKey.length() > 0) {
-        http.addHeader("X-API-Key", apiKey);
+        k.http.addHeader("X-API-Key", apiKey);
     }
 
-    const int status = http.POST(body, bodySize);
-    String response = status >= 200 ? http.getString() : "";
-    heap_caps_free(body);
+    const int status = k.http.POST((uint8_t *)body, ukuran);
 
-    if (status >= 200 && status < 300) {
-        String ringkas = "[SERVER] Deteksi diterima (HTTP ";
-        ringkas += status;
-        ringkas += ")";
-        if (response.length() > 0) {
-            ringkas += ": ";
-            ringkas += response;
+    if (status > 0) {
+        String isi = k.http.getString();
+        if (respons) {
+            *respons = isi;
         }
-        xSemaphoreTake(dataMutex, portMAX_DELAY);
-        hasilDeteksi = ringkas;
-        xSemaphoreGive(dataMutex);
-        Serial.println(ringkas);
-    } else if (status > 0) {
-        Serial.printf("[SERVER] Deteksi ditolak (HTTP %d): %s\n", status, response.c_str());
+        if (status < 200 || status >= 300) {
+            Serial.printf("[%s] Ditolak (HTTP %d): %s\n", tag, status, isi.c_str());
+        }
     } else {
-        Serial.printf("[SERVER] Koneksi gagal: %s\n", http.errorToString(status).c_str());
+        Serial.printf(
+            "[%s] Koneksi ke endpoint API gagal: %s (WiFi=%d, IP=%s)\n",
+            tag,
+            k.http.errorToString(status).c_str(),
+            WiFi.status(),
+            WiFi.localIP().toString().c_str()
+        );
+        if (https) {
+            cetakErrorTls(&k.tls);
+        }
+        k.tls.stop();
+        k.plain.stop();
     }
 
-    http.end();
+    k.http.end();
+    xSemaphoreGive(koneksiApiMutex);
+    if (status < 0 && !URL_SERVER_TETAP) {
+        portENTER_CRITICAL(&discoveryRequestMux);
+        discoverySegeraDiminta = true;
+        portEXIT_CRITICAL(&discoveryRequestMux);
+    }
     return status;
 }
 
-int kirimFrame(const uint8_t *frame, size_t frameSize) {
-    const String baseUrl = urlBersih();
-    const String endpoint = baseUrl + PATH_API;
-
-    if (baseUrl.startsWith("https://")) {
-        if (time(nullptr) < WAKTU_TLS_MINIMUM) {
-            Serial.println("[TLS] Menunggu sinkronisasi waktu NTP.");
-            return -2;
-        }
-
-        WiFiClientSecure client;
-        client.setCACert(SERTIFIKAT_ROOT_YE);
-        return kirimFrameHttp(client, endpoint, frame, frameSize);
+// ---------------------------------------------------------------
+// Alert ke ESP32 pengelola TWS: "ALERT <0|1|2>\n"
+// 2 = BAHAYA/TINGGI, 1 = WASPADA/SEDANG, 0 = aman
+// ---------------------------------------------------------------
+void kirimAlert(uint8_t level) {
+#if ENABLE_ALERT_UART
+    static uint8_t levelTerakhir = 255;
+    static unsigned long waktuTerakhir = 0;
+    const unsigned long now = millis();
+    if (level != levelTerakhir || now - waktuTerakhir >= 1000) {
+        levelTerakhir = level;
+        waktuTerakhir = now;
+        AlertSerial.printf("ALERT %u\n", (unsigned int)level);
     }
-
-    WiFiClient client;
-    return kirimFrameHttp(client, endpoint, frame, frameSize);
+#endif
 }
 
-void kirimServerTask(void *pvParameters) {
+void deteksiTask(void *pvParameters) {
+    const int nomor = (int)(intptr_t)pvParameters;
+
+    const String head = F("--VestCareESP32S3Boundary\r\n"
+                          "Content-Disposition: form-data; name=\"gambar\"; filename=\"frame.jpg\"\r\n"
+                          "Content-Type: image/jpeg\r\n\r\n");
+    String tail = F("\r\n--VestCareESP32S3Boundary\r\n"
+                    "Content-Disposition: form-data; name=\"mode_realtime\"\r\n\r\n");
+    tail += MODE_REALTIME_DETEKSI;
+    tail += F("\r\n--VestCareESP32S3Boundary\r\n"
+              "Content-Disposition: form-data; name=\"sesi\"\r\n\r\n");
+    tail += DEVICE_ID;
+    tail += F("\r\n--VestCareESP32S3Boundary--\r\n");
+
+    const size_t kapasitas = head.length() + FRAME_MAKS + tail.length();
+    uint8_t *body = (uint8_t *)heap_caps_malloc(kapasitas, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!body) {
+        Serial.printf("[DETEKSI%d] Gagal mengalokasikan buffer.\n", nomor);
+        vTaskDelete(NULL);
+        return;
+    }
+    memcpy(body, head.c_str(), head.length());
+
+    SemaphoreHandle_t sem = daftarFrame();
+
+    vTaskDelay(pdMS_TO_TICKS(nomor * 120));   // selang-seling antar worker
+
     while (true) {
-        vTaskDelay(pdMS_TO_TICKS(500));
-
         if (WiFi.status() != WL_CONNECTED || !urlServerValid()) {
+            vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
 
-        uint8_t *frame = NULL;
-        size_t frameSize = 0;
-        uint32_t id = 0;
-        bool ada = false;
-
-        xSemaphoreTake(dataMutex, portMAX_DELAY);
-        if (adaAntrian) {
-            frame = frameAntrian;
-            frameSize = ukuranFrameAntrian;
-            id = nomorAntrian;
-            ada = true;
-        }
-        xSemaphoreGive(dataMutex);
-
-        if (!ada) {
+        size_t panjang = 0;
+        uint32_t idKirim = 0;
+        if (!ambilFrameBaru(body + head.length(), panjang, idDeteksiDiambil, 1000, sem, &idKirim)) {
             continue;
         }
+        memcpy(body + head.length() + panjang, tail.c_str(), tail.length());
+        const size_t total = head.length() + panjang + tail.length();
 
-        const int status = kirimFrame(frame, frameSize);
+        const unsigned long mulai = millis();
+        String respons;
+        const int status = postReuse(
+            koneksiApi, urlBersih(), PATH_API,
+            "multipart/form-data; boundary=VestCareESP32S3Boundary",
+            body, total, &respons, 15000, "DETEKSI"
+        );
 
         if (status >= 200 && status < 300) {
+            latensiDeteksiMs = millis() - mulai;
+            jumlahDeteksi++;
+            respons.trim();
+
             xSemaphoreTake(dataMutex, portMAX_DELAY);
-            if (nomorAntrian == id) {
-                adaAntrian = false;
-                if (frameAntrian) {
-                    heap_caps_free(frameAntrian);
-                    frameAntrian = NULL;
-                    ukuranFrameAntrian = 0;
+            const bool terbaru = idKirim > idHasilTerapan;
+            if (terbaru) {
+                idHasilTerapan = idKirim;
+
+                String ringkas = "[SERVER] Deteksi diterima (HTTP ";
+                ringkas += status;
+                ringkas += ", ";
+                ringkas += (unsigned long)latensiDeteksiMs;
+                ringkas += " ms)";
+                if (respons.length() > 0) {
+                    ringkas += ": ";
+                    ringkas += respons;
+                }
+                hasilDeteksi = ringkas;
+
+                if (respons.length() > 0 && respons.length() <= 8192 &&
+                    (respons[0] == '{' || respons[0] == '[')) {
+                    hasilJson = respons;
+                    waktuHasil = millis();
+                    seqHasil++;
+                } else {
+                    hasilJson = "";
                 }
             }
             xSemaphoreGive(dataMutex);
+
+            if (terbaru) {
+                uint8_t level = 0;
+                const int posAlert = respons.indexOf("\"alert\":");
+                if (posAlert >= 0 && posAlert + 8 < (int)respons.length()) {
+                    const char c = respons[posAlert + 8];
+                    level = (c >= '0' && c <= '2') ? (uint8_t)(c - '0') : 0;
+                }
+                kirimAlert(level);
+            }
         } else {
+            const uint32_t jedaGagal = (status == 401 || status == 503)
+                ? 5000
+                : JEDA_ULANG_KIRIM;
+            vTaskDelay(pdMS_TO_TICKS(jedaGagal));
+        }
+    }
+}
+
+void frameUploadTask(void *pvParameters) {
+    uint8_t *frame = (uint8_t *)heap_caps_malloc(
+        FRAME_MAKS,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+    );
+    if (!frame) {
+        Serial.println("[FRAME] Gagal mengalokasikan buffer upload.");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    SemaphoreHandle_t sem = daftarFrame();
+    uint32_t idTerakhir = 0;
+    unsigned long terakhirKirim = 0;
+
+    while (true) {
+        if (WiFi.status() != WL_CONNECTED || !urlServerValid()) {
+            vTaskDelay(pdMS_TO_TICKS(250));
+            continue;
+        }
+
+        size_t panjang = 0;
+        if (!ambilFrameBaru(frame, panjang, idTerakhir, 1000, sem)) {
+            continue;
+        }
+        if (terakhirKirim &&
+            millis() - terakhirKirim < JEDA_UPLOAD_FRAME_MS) {
+            continue;
+        }
+        terakhirKirim = millis();
+
+        const int status = postReuse(
+            koneksiApi,
+            urlBersih(),
+            PATH_FRAME,
+            "image/jpeg",
+            frame,
+            panjang,
+            NULL,
+            5000,
+            "FRAME"
+        );
+        if (status >= 200 && status < 300) {
+            jumlahFrameUpload++;
+        } else if (status == 401 || status == 503) {
+            vTaskDelay(pdMS_TO_TICKS(5000));
+        } else if (status < 0) {
             vTaskDelay(pdMS_TO_TICKS(JEDA_ULANG_KIRIM));
         }
     }
 }
 
-void cameraDetectTask(void *pvParameters) {
-    while (true) {
-        vTaskDelay(pdMS_TO_TICKS(JEDA_DETEKSI));
+#if ENABLE_ULTRASONIC
+float bacaJarakMeter() {
+    const float kecepatan = 331.3f + 0.606f * SUHU_UDARA;
+    float s[SAMPEL_TOTAL];
+    int n = 0;
 
-        camera_fb_t *fb = esp_camera_fb_get();
-        if (!fb || fb->format != PIXFORMAT_JPEG) {
-            if (fb) esp_camera_fb_return(fb);
-            continue;
-        }
+    for (int i = 0; i < SAMPEL_TOTAL; i++) {
+        digitalWrite(TRIG_PIN, LOW);
+        delayMicroseconds(4);
+        digitalWrite(TRIG_PIN, HIGH);
+        delayMicroseconds(10);
+        digitalWrite(TRIG_PIN, LOW);
 
-        bool dapatAntrean = false;
-        xSemaphoreTake(dataMutex, portMAX_DELAY);
-        if (!adaAntrian) {
-            uint8_t *salinan = (uint8_t *)heap_caps_malloc(fb->len, MALLOC_CAP_SPIRAM);
-            if (salinan) {
-                memcpy(salinan, fb->buf, fb->len);
-                frameAntrian = salinan;
-                ukuranFrameAntrian = fb->len;
-                nomorAntrian++;
-                adaAntrian = true;
-                dapatAntrean = true;
+        const unsigned long durasi = pulseIn(ECHO_PIN, HIGH, 24000UL);
+        if (durasi > 0) {
+            const float jarak = (durasi * 0.000001f * kecepatan) / 2.0f;
+            if (jarak >= JARAK_MIN_M && jarak <= JARAK_MAX_M) {
+                s[n++] = jarak;
             }
         }
-        xSemaphoreGive(dataMutex);
+        vTaskDelay(pdMS_TO_TICKS(30));
+    }
 
-        esp_camera_fb_return(fb);
+    if (n < SAMPEL_VALID_MIN) {
+        return -1.0f;
+    }
 
-        if (dapatAntrean) {
-            Serial.printf("[CAMERA] Frame %u dikirim untuk deteksi.\n",
-                          (unsigned int)nomorAntrian);
+    for (int i = 1; i < n; i++) {
+        float x = s[i];
+        int j = i - 1;
+        while (j >= 0 && s[j] > x) {
+            s[j + 1] = s[j];
+            j--;
+        }
+        s[j + 1] = x;
+    }
+
+    const float median = s[n / 2];
+    float total = 0;
+    int cocok = 0;
+    for (int i = 0; i < n; i++) {
+        if (fabsf(s[i] - median) <= TOLERANSI_SEBARAN_M) {
+            total += s[i];
+            cocok++;
+        }
+    }
+
+    if (cocok < SAMPEL_VALID_MIN) {
+        return -1.0f;
+    }
+
+    return total / cocok;
+}
+#endif
+
+#if ENABLE_GPS
+void gpsTask(void *pvParameters) {
+    while (true) {
+        while (GPSSerial.available() > 0) {
+            char c = GPSSerial.read();
+            xSemaphoreTake(gpsMutex, portMAX_DELAY);
+            gps.encode(c);
+            xSemaphoreGive(gpsMutex);
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+void printGPS() {
+    Serial.printf("[GPS] char=%u sat=", (unsigned int)gps.charsProcessed());
+    if (gps.satellites.isValid()) Serial.print(gps.satellites.value());
+    else Serial.print("-");
+
+    if (gps.location.isValid()) {
+        Serial.print(" FIX lat=");
+        Serial.print(gps.location.lat(), 6);
+        Serial.print(" lng=");
+        Serial.print(gps.location.lng(), 6);
+        Serial.print(" hdop=");
+        Serial.println(gps.hdop.isValid() ? gps.hdop.hdop() : 0.0, 1);
+        Serial.print("[GPS] Maps: https://www.google.com/maps?q=");
+        Serial.print(gps.location.lat(), 6);
+        Serial.print(",");
+        Serial.println(gps.location.lng(), 6);
+    } else if (millis() > 5000 && gps.charsProcessed() < 10) {
+        Serial.println(" | tidak ada data. Cek kabel TX/RX dan power.");
+    } else {
+        Serial.println(" | belum fix");
+    }
+}
+#endif
+
+void telemetriTask(void *pvParameters) {
+    unsigned long terakhir = 0;
+    unsigned long registrasiTerakhir = 0;
+
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+
+        if (millis() - terakhir < JEDA_TELEMETRI) {
+            continue;
+        }
+        if (WiFi.status() != WL_CONNECTED || !urlServerValid()) {
+            continue;
+        }
+        terakhir = millis();
+
+        float jarak = -1.0f;
+#if ENABLE_ULTRASONIC
+        jarak = bacaJarakMeter();
+#endif
+        const bool jarakValid = jarak > 0;
+#if ENABLE_ULTRASONIC
+        if (jarakValid) {
+            Serial.printf("[JARAK] %.2f m\n", jarak);
+        } else {
+            Serial.println("[JARAK] -");
+        }
+#endif
+
+        String p = "{\"jarak\":";
+        p += jarakValid ? String(jarak, 3) : String("null");
+        p += ",\"valid_jarak\":";
+        p += jarakValid ? "true" : "false";
+
+#if ENABLE_GPS
+        xSemaphoreTake(gpsMutex, portMAX_DELAY);
+
+        printGPS();
+
+        const bool fix = gps.location.isValid();
+        const bool terbaca = gps.charsProcessed() > 10;
+
+        p += ",\"terbaca\":";
+        p += terbaca ? "true" : "false";
+        p += ",\"fix\":";
+        p += fix ? "true" : "false";
+        p += ",\"sat\":";
+        p += String(gps.satellites.isValid() ? (int)gps.satellites.value() : 0);
+        if (fix) {
+            p += ",\"lat\":" + String(gps.location.lat(), 6);
+            p += ",\"lng\":" + String(gps.location.lng(), 6);
+            p += ",\"alt\":" + String(gps.altitude.isValid() ? gps.altitude.meters() : 0.0, 1);
+            p += ",\"spd\":" + String(gps.speed.isValid() ? gps.speed.kmph() : 0.0, 1);
+            p += ",\"hdop\":" + String(gps.hdop.isValid() ? gps.hdop.hdop() : 0.0, 1);
+        }
+
+        xSemaphoreGive(gpsMutex);
+#else
+        p += ",\"terbaca\":false,\"fix\":false,\"sat\":0";
+#endif
+        p += "}";
+
+        postReuse(
+            koneksiApi, urlBersih(), PATH_TELEMETRI, "application/json",
+            (const uint8_t *)p.c_str(), p.length(), NULL, 8000, "TELEMETRI"
+        );
+
+        if (!registrasiTerakhir || millis() - registrasiTerakhir >= 60000) {
+            registrasiTerakhir = millis();
+            const String payload = String("{\"ip\":\"") + WiFi.localIP().toString() + "\"}";
+            postReuse(
+                koneksiApi, urlBersih(), PATH_REGISTRASI_STREAM, "application/json",
+                (const uint8_t *)payload.c_str(), payload.length(), NULL, 5000,
+                "STREAM-REG"
+            );
         }
     }
 }
@@ -575,12 +1401,16 @@ void setup() {
     delay(1000);
 
     Serial.println();
-    Serial.println("ESP32-S3 VestCare OBJECT DETECTOR");
+    Serial.println("ESP32-S3 VestCare OBJECT DETECTOR (kamera + telemetri)");
 
     dataMutex = xSemaphoreCreateMutex();
+    urlMutex = xSemaphoreCreateMutex();
+    frameMutex = xSemaphoreCreateMutex();
+    koneksiApiMutex = xSemaphoreCreateMutex();
 
-    if (dataMutex == NULL) {
-        Serial.println("Data mutex failed");
+    if (dataMutex == NULL || urlMutex == NULL || frameMutex == NULL ||
+        koneksiApiMutex == NULL) {
+        Serial.println("Gagal membuat mutex firmware");
         return;
     }
 
@@ -591,45 +1421,33 @@ void setup() {
         return;
     }
 
+    frameTerbaru = (uint8_t *)heap_caps_malloc(FRAME_MAKS, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!frameTerbaru) {
+        Serial.println("Gagal mengalokasikan buffer frame bersama");
+        return;
+    }
+
     pinMode(RESET_PIN, INPUT_PULLUP);
 
     ledcAttach(FLASH_LED_PIN, 5000, 8);
     ledcWrite(FLASH_LED_PIN, 0);
-
-    muatKonfigurasi();
 
     WiFi.mode(WIFI_STA);
 
     WiFiManager wm;
 
     if (digitalRead(RESET_PIN) == LOW) {
-        Serial.println("Menghapus pengaturan WiFi dan server...");
+        Serial.println("Menghapus pengaturan WiFi...");
         wm.resetSettings();
-        hapusKonfigurasi();
         delay(1000);
     }
 
-    WiFiManagerParameter parameterServer(
-        "server_url",
-        "URL root server VestCare (contoh: https://xxxx.ngrok-free.dev)",
-        serverUrl.c_str(),
-        127
-    );
-
-    WiFiManagerParameter parameterApiKey(
-        "api_key",
-        "VEST_API_KEY (kosongkan jika autentikasi server nonaktif)",
-        apiKey.c_str(),
-        64
-    );
-
-    wm.addParameter(&parameterServer);
-    wm.addParameter(&parameterApiKey);
-    wm.setSaveConfigCallback(tandaiKonfigurasiUntukDisimpan);
     wm.setAPCallback(configModeCallback);
     wm.setConfigPortalTimeout(180);
+    wm.setConnectTimeout(8);
+    wm.setConnectRetries(1);
 
-    bool connected = wm.autoConnect("VestCare-ESP32S3", "12345678");
+    const bool connected = wm.autoConnect("VestCare-ESP32S3", "12345678");
 
     if (!connected) {
         Serial.println("Gagal terhubung, restart...");
@@ -637,11 +1455,12 @@ void setup() {
         ESP.restart();
     }
 
-    if (simpanKonfigurasi) {
-        simpanKonfigurasiBaru(parameterServer.getValue(), parameterApiKey.getValue());
-    }
-
     WiFi.setSleep(false);
+    WiFi.setAutoReconnect(true);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+#if WIFI_HT40
+    esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT40);
+#endif
 
     Serial.println("\nWiFi terhubung!");
     Serial.print("SSID : ");
@@ -650,12 +1469,39 @@ void setup() {
     Serial.println(WiFi.localIP());
 
     configTime(7 * 60 * 60, 0, "pool.ntp.org", "time.nist.gov");
-
-    if (urlServerValid()) {
-        Serial.printf("[SERVER] Frame dikirim ke %s%s\n", urlBersih().c_str(), PATH_API);
-    } else {
-        Serial.println("[SERVER] URL belum valid. Atur URL melalui portal VestCare-ESP32S3.");
+    if (!urlServerValid()) {
+        temukanUrlServer();
     }
+    Serial.printf(
+        "[TLS] CA bundle bawaan ESP32, batas handshake=%lu detik\n",
+        TLS_HANDSHAKE_TIMEOUT_SECONDS
+    );
+    if (urlServerValid()) {
+        Serial.printf(
+            "[SERVER] API VestCare aktif (%s).\n",
+            URL_SERVER_TETAP ? "endpoint tetap" : "discovery LAN"
+        );
+    } else {
+        Serial.println(
+            "[SERVER] Endpoint API belum ditemukan; discovery otomatis akan mencoba lagi."
+        );
+    }
+
+#if ENABLE_ULTRASONIC
+    pinMode(TRIG_PIN, OUTPUT);
+    pinMode(ECHO_PIN, INPUT);
+    digitalWrite(TRIG_PIN, LOW);
+#endif
+#if ENABLE_GPS
+    gpsMutex = xSemaphoreCreateMutex();
+    GPSSerial.setRxBufferSize(4096);
+    GPSSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+    xTaskCreatePinnedToCore(gpsTask, "GPS", 4096, NULL, 1, NULL, 0);
+#endif
+
+#if ENABLE_ALERT_UART
+    AlertSerial.begin(ALERT_BAUD, SERIAL_8N1, -1, ALERT_TX_PIN);
+#endif
 
     camera_config_t config = {};
 
@@ -685,8 +1531,8 @@ void setup() {
     config.xclk_freq_hz = 20000000;
     config.pixel_format = PIXFORMAT_JPEG;
     config.frame_size = FRAMESIZE_QVGA;
-    config.jpeg_quality = 12;
-    config.fb_count = 2;
+    config.jpeg_quality = KUALITAS_JPEG;
+    config.fb_count = 3;
     config.fb_location = CAMERA_FB_IN_PSRAM;
     config.grab_mode = CAMERA_GRAB_LATEST;
 
@@ -712,33 +1558,90 @@ void setup() {
         s->set_ae_level(s, -1);
     }
 
+    // Satu-satunya pembaca kamera
+    xTaskCreatePinnedToCore(captureTask, "Capture", 4096, NULL, 3, NULL, 1);
+
     startCameraServer();
 
     Serial.println("Camera server started");
     Serial.print("Open browser: http://");
     Serial.println(WiFi.localIP());
 
-    xTaskCreatePinnedToCore(
-        cameraDetectTask,
-        "CameraDetect",
-        32768,
-        NULL,
-        1,
-        NULL,
-        1
-    );
-
-    xTaskCreatePinnedToCore(
-        kirimServerTask,
-        "KirimServer",
-        16384,
-        NULL,
-        1,
-        NULL,
-        0
-    );
+#if !MODE_STREAM_SAJA
+    for (int i = 0; i < N_WORKER_DETEKSI; i++) {
+        xTaskCreatePinnedToCore(deteksiTask, "Deteksi", 20480, (void *)(intptr_t)i, 2, NULL, 0);
+    }
+    // Dinonaktifkan sementara: endpoint Railway /api/esp32/frame belum tersedia.
+    xTaskCreatePinnedToCore(telemetriTask, "Telemetri", 20480, NULL, 1, NULL, 1);
+#endif
 }
 
 void loop() {
-    delay(1000);
+    static uint32_t streamLalu = 0;
+    static uint32_t kameraLalu = 0;
+    static unsigned long waktuLalu = millis();
+    static unsigned long upayaReconnectTerakhir = 0;
+    static unsigned long discoveryTerakhir = 0;
+
+    delay(3000);
+
+    const wl_status_t statusWiFi = WiFi.status();
+    if (statusWiFi != WL_CONNECTED &&
+        millis() - upayaReconnectTerakhir >= 10000) {
+        upayaReconnectTerakhir = millis();
+        Serial.printf(
+            "[WIFI] Terputus (status=%d); mencoba sambung ulang.\n",
+            statusWiFi
+        );
+        WiFi.reconnect();
+    }
+
+    const unsigned long sekarang = millis();
+    const bool intervalDiscoverySiap =
+        !discoveryTerakhir ||
+        sekarang - discoveryTerakhir >= JEDA_DISCOVERY_GAGAL_MS;
+    const bool discoveryDariGagal =
+        !URL_SERVER_TETAP &&
+        ambilPermintaanDiscovery(
+            statusWiFi == WL_CONNECTED && intervalDiscoverySiap
+        );
+    const bool discoveryTerjadwal =
+        !discoveryTerakhir || sekarang - discoveryTerakhir >= 60000;
+
+    if (!URL_SERVER_TETAP &&
+        statusWiFi == WL_CONNECTED &&
+        (discoveryDariGagal || discoveryTerjadwal)) {
+        discoveryTerakhir = millis();
+        temukanUrlServer();
+        if (discoveryDariGagal) {
+            cekJalurPublik();
+        }
+    }
+
+    const uint32_t stream = jumlahFrameStream;
+    const uint32_t kamera = jumlahFrameKamera;
+    const unsigned long waktu = millis();
+    const float dt = (float)(waktu - waktuLalu);
+    const float fpsStream = (stream - streamLalu) * 1000.0f / dt;
+    const float fpsKamera = (kamera - kameraLalu) * 1000.0f / dt;
+    streamLalu = stream;
+    kameraLalu = kamera;
+    waktuLalu = waktu;
+
+    Serial.printf(
+        "[STAT] kamera=%.1f fps | stream=%.1f fps | upload=%u | deteksi=%u (%u ms) | klien=%d | RSSI=%d dBm | heap=%u | psram=%u\n",
+        fpsKamera,
+        fpsStream,
+        (unsigned int)jumlahFrameUpload,
+        (unsigned int)jumlahDeteksi,
+        (unsigned int)latensiDeteksiMs,
+        (int)klienLokal,
+        WiFi.RSSI(),
+        (unsigned int)ESP.getFreeHeap(),
+        (unsigned int)ESP.getFreePsram()
+    );
+
+    if (ESP.getFreeHeap() < 40000) {
+        Serial.println("[WARN] Heap internal rendah; koneksi HTTPS/TLS dapat gagal.");
+    }
 }

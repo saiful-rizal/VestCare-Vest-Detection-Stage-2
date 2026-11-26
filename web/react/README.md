@@ -16,4 +16,6 @@
 - Dashboard menampilkan objek dari frame terakhir, bukan data deteksi contoh.
 - Saat kamera aktif, frame dikirim kira-kira setiap detik. Semua kotak objek yang terdeteksi dan daftar deteksi diperbarui langsung; instruksi suara dari server diputar saat objek atau tingkat peringatan berubah.
 - Izinkan akses kamera dan aktifkan suara browser saat membuka kamera. Suara tidak diputar ulang pada setiap frame.
+- Untuk kamera ESP32, dashboard memeriksa snapshot terbaru dan hasil deteksi setiap 150 ms; cache ETag mencegah pengunduhan frame yang sama. Status telemetri diperbarui setiap 500 ms dan dianggap online saat telemetri atau frame kamera baru diterima server.
+- Suara peringatan mengikuti output audio browser. Pasangkan TWS ke perangkat yang membuka dashboard, lalu gunakan tombol **Pilih TWS** (browser yang mendukung pemilihan output) atau jadikan TWS sebagai speaker utama perangkat.
 - Aktifkan RLS dan policy `SELECT` yang sesuai untuk pembacaan browser.
