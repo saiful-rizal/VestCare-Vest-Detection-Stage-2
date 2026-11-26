@@ -15,6 +15,7 @@ node_modules/
 data/archive/
 data/datasets/
 data/results/
+vestcare-dataset/
 # Runtime: simpan hanya pustaka suara Ardi di image; riwayat & cache lain
 # tetap ditulis saat container berjalan (dan bisa dipasang volume).
 data/runtime/*

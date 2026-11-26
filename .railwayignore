@@ -14,6 +14,7 @@ node_modules/
 data/archive/
 data/datasets/
 data/results/
+vestcare-dataset/
 data/runtime/*
 !data/runtime/audio/
 !data/runtime/audio/**

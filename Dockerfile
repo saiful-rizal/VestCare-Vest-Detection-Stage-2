@@ -1,6 +1,11 @@
 FROM node:22-bookworm-slim AS dashboard-build
 
 WORKDIR /app/web/react
+ARG SUPABASE_URL
+ARG NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+ENV NEXT_PUBLIC_SUPABASE_URL=${SUPABASE_URL} \
+    NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY}
+
 COPY web/react/package.json web/react/package-lock.json ./
 RUN npm ci
 COPY web/react/ ./
