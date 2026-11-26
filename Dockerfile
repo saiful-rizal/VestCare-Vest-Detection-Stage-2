@@ -32,4 +32,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . ./
 COPY --from=dashboard-build /app/web/react/dist ./web/react/dist
 
-CMD ["sh", "-c", "exec uvicorn server_rest_api:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1 --proxy-headers --forwarded-allow-ips=*"]
+CMD ["sh", "-c", "exec uvicorn server_rest_api:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1 --proxy-headers --forwarded-allow-ips=* --no-access-log"]

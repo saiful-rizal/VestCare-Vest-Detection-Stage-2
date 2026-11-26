@@ -63,12 +63,13 @@ const uint16_t PORT_DISCOVERY_CLIENT = 4212;
 #define GPS_RX_PIN  41
 #define GPS_TX_PIN  42
 #define GPS_BAUD    9600
+const unsigned long GPS_FIX_MAX_AGE_MS = 5000UL;
 
 const unsigned long JEDA_TELEMETRI = 1000;
-const unsigned long JEDA_UPLOAD_FRAME_MS = 250;
+const unsigned long JEDA_UPLOAD_FRAME_MS = 125;
 const float SUHU_UDARA = 28.0f;
 const float JARAK_MIN_M = 0.05f;
-const float JARAK_MAX_M = 3.50f;
+const float JARAK_MAX_M = 3.00f;
 const int SAMPEL_TOTAL = 5;
 const int SAMPEL_VALID_MIN = 3;
 const float TOLERANSI_SEBARAN_M = 0.03f;
@@ -99,7 +100,7 @@ const char* MODE_REALTIME_DETEKSI = "true";
 #define ALERT_BAUD 115200
 
 // ---- Penyetelan kelancaran ----
-#define KUALITAS_JPEG             14   // angka lebih besar = file lebih kecil, lebih mulus
+#define KUALITAS_JPEG             16   // file lebih kecil untuk stream lebih lancar
 #define WIFI_HT40                  0   // 1 = coba kanal 40 MHz (lebih cepat, kurang tahan interferensi)
 const unsigned long JEDA_ULANG_KIRIM = 500;
 const unsigned long TLS_HANDSHAKE_TIMEOUT_SECONDS = 15;
@@ -968,12 +969,15 @@ struct Koneksi {
     WiFiClientSecure tls;
     WiFiClient plain;
     HTTPClient http;
+    SemaphoreHandle_t mutex = NULL;
     String basis;
     bool tlsSiap = false;
 };
 
 Koneksi koneksiApi;
+Koneksi koneksiFrame;
 SemaphoreHandle_t koneksiApiMutex = NULL;
+SemaphoreHandle_t koneksiFrameMutex = NULL;
 
 void cetakErrorTls(WiFiClientSecure *client) {
     if (client == NULL) {
@@ -993,7 +997,7 @@ int postReuse(Koneksi &k, const String &basis, const char *path,
         Serial.printf("[%s] Menunggu sinkronisasi waktu NTP.\n", tag);
         return -2;
     }
-    xSemaphoreTake(koneksiApiMutex, portMAX_DELAY);
+    xSemaphoreTake(k.mutex, portMAX_DELAY);
     if (basis != k.basis) {
         k.tls.stop();
         k.plain.stop();
@@ -1013,7 +1017,7 @@ int postReuse(Koneksi &k, const String &basis, const char *path,
                              : k.http.begin(k.plain, endpoint);
     if (!mulai) {
         Serial.printf("[%s] Gagal memulai koneksi HTTP.\n", tag);
-        xSemaphoreGive(koneksiApiMutex);
+        xSemaphoreGive(k.mutex);
         return -1;
     }
 
@@ -1049,7 +1053,7 @@ int postReuse(Koneksi &k, const String &basis, const char *path,
     }
 
     k.http.end();
-    xSemaphoreGive(koneksiApiMutex);
+    xSemaphoreGive(k.mutex);
     if (status < 0 && !URL_SERVER_TETAP) {
         portENTER_CRITICAL(&discoveryRequestMux);
         discoverySegeraDiminta = true;
@@ -1206,7 +1210,7 @@ void frameUploadTask(void *pvParameters) {
         terakhirKirim = millis();
 
         const int status = postReuse(
-            koneksiApi,
+            koneksiFrame,
             urlBersih(),
             PATH_FRAME,
             "image/jpeg",
@@ -1294,12 +1298,17 @@ void gpsTask(void *pvParameters) {
     }
 }
 
+bool gpsFixValid() {
+    return gps.location.isValid() &&
+        gps.location.age() <= GPS_FIX_MAX_AGE_MS;
+}
+
 void printGPS() {
     Serial.printf("[GPS] char=%u sat=", (unsigned int)gps.charsProcessed());
     if (gps.satellites.isValid()) Serial.print(gps.satellites.value());
     else Serial.print("-");
 
-    if (gps.location.isValid()) {
+    if (gpsFixValid()) {
         Serial.print(" FIX lat=");
         Serial.print(gps.location.lat(), 6);
         Serial.print(" lng=");
@@ -1313,7 +1322,7 @@ void printGPS() {
     } else if (millis() > 5000 && gps.charsProcessed() < 10) {
         Serial.println(" | tidak ada data. Cek kabel TX/RX dan power.");
     } else {
-        Serial.println(" | belum fix");
+        Serial.println(" | belum fix. GPS sulit menerima sinyal di dalam ruangan; pindahkan ke area terbuka.");
     }
 }
 #endif
@@ -1356,7 +1365,7 @@ void telemetriTask(void *pvParameters) {
 
         printGPS();
 
-        const bool fix = gps.location.isValid();
+        const bool fix = gpsFixValid();
         const bool terbaca = gps.charsProcessed() > 10;
 
         p += ",\"terbaca\":";
@@ -1407,9 +1416,12 @@ void setup() {
     urlMutex = xSemaphoreCreateMutex();
     frameMutex = xSemaphoreCreateMutex();
     koneksiApiMutex = xSemaphoreCreateMutex();
+    koneksiFrameMutex = xSemaphoreCreateMutex();
+    koneksiApi.mutex = koneksiApiMutex;
+    koneksiFrame.mutex = koneksiFrameMutex;
 
     if (dataMutex == NULL || urlMutex == NULL || frameMutex == NULL ||
-        koneksiApiMutex == NULL) {
+        koneksiApiMutex == NULL || koneksiFrameMutex == NULL) {
         Serial.println("Gagal membuat mutex firmware");
         return;
     }
@@ -1571,8 +1583,8 @@ void setup() {
     for (int i = 0; i < N_WORKER_DETEKSI; i++) {
         xTaskCreatePinnedToCore(deteksiTask, "Deteksi", 20480, (void *)(intptr_t)i, 2, NULL, 0);
     }
-    // Dinonaktifkan sementara: endpoint Railway /api/esp32/frame belum tersedia.
     xTaskCreatePinnedToCore(telemetriTask, "Telemetri", 20480, NULL, 1, NULL, 1);
+    xTaskCreatePinnedToCore(frameUploadTask, "FrameUpload", 8192, NULL, 1, NULL, 0);
 #endif
 }
 

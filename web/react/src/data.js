@@ -36,7 +36,7 @@ export const initialState = {
   detectionHistoryError: null,
 };
 
-export function normalizeDetections(payload) {
+export function normalizeDetections(payload, { includeUncertain = false } = {}) {
   const items = Array.isArray(payload)
     ? payload
     : payload?.deteksi || payload?.detections || payload?.predictions || payload?.data;
@@ -47,7 +47,7 @@ export function normalizeDetections(payload) {
 
   const time = payload?.waktu || new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
 
-  return items.filter((item) => !item.ragu).map((item) => {
+  return items.filter((item) => includeUncertain || !item.ragu).map((item) => {
     const confidence = Number(item.confidence ?? item.score ?? item.conf ?? 0);
     const className = item.object || item.class || item.label || item.kelas;
     const rawLevel = String(item.level ?? item.urgency ?? "").toUpperCase();

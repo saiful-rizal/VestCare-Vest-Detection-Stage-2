@@ -51,7 +51,7 @@ US_MAKS_M = 3.0
 JARAK_TAK_DIKETAHUI_M = 2.0
 
 SETENGAH_KORIDOR_M = 0.45
-CONF_MIN_KELAS = {"lubang": 0.80}
+CONF_MIN_KELAS = {"lubang": 0.35}
 IOU_TOLAK_PENUNJANG = 0.50
 
 CONF_RAGU_DEFAULT = 0.50
@@ -377,7 +377,7 @@ class PelacakGerak:
         ambang_diam_ms: float = 0.4,
         ambang_posisi_per_detik: float = 0.05,
         ambang_posisi_diam_per_detik: float = 0.025,
-        min_sampel: int = 3,
+        min_sampel: int = 2,
         umur_maks: float = 1.5,
         waktu_fn: Callable[[], float] = time.monotonic,
     ) -> None:

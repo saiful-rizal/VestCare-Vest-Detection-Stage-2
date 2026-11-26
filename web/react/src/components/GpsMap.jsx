@@ -397,56 +397,6 @@ function Metric({ label, value, sub, tone, icon }) {
   );
 }
 
-function CopyLine({ text }) {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1800);
-    } catch {
-      setCopied(false);
-    }
-  };
-  return (
-    <div className="vc-copyline">
-      <code>{text}</code>
-      <button type="button" onClick={copy}>
-        <Icon name={copied ? "check" : "copy"} size={14} />
-        {copied ? "Tersalin" : "Salin"}
-      </button>
-    </div>
-  );
-}
-
-// Panduan singkat mengaktifkan peta realtime, tampil hanya saat kunci belum diisi.
-function ApiKeyNotice() {
-  return (
-    <details className="vc-notice">
-      <summary className="vc-notice-summary">
-        <span className="vc-seg-chip vc-tone-idle"><Icon name="key" size={16} /></span>
-        <span style={{ flex: 1, minWidth: 0 }}>
-          <span className="vc-notice-title" style={{ display: "block" }}>Peta masih mode dasar</span>
-          <span className="vc-notice-text" style={{ display: "block" }}>
-            Tambahkan kunci Google Maps agar marker rompi, jejak perjalanan, objek terdeteksi, dan mode 3D tampil di peta.
-          </span>
-        </span>
-        <span className="vc-notice-toggle">Cara mengaktifkan <Icon name="chevronDown" size={14} /></span>
-      </summary>
-      <ol className="vc-steps">
-        <li>
-          Di Google Cloud Console, aktifkan <strong>Maps JavaScript API</strong>, lalu buat <strong>API key</strong> di menu Credentials.
-        </li>
-        <li>
-          Buka file <code>.env</code> di folder yang sama dengan <code>server_rest_api.py</code>, lalu tambahkan baris ini:
-          <CopyLine text="GOOGLE_MAPS_API_KEY=kunci_anda" />
-        </li>
-        <li>Simpan file, lalu jalankan ulang server. Tidak perlu build ulang dashboard.</li>
-      </ol>
-    </details>
-  );
-}
-
 export default function GpsMap({ position, detections = [], telemetry, trail = [], mapConfig }) {
   const config = mapConfig || DEFAULT_MAP_CONFIG;
   const [follow, setFollow] = useState(true);
@@ -466,15 +416,26 @@ export default function GpsMap({ position, detections = [], telemetry, trail = [
     setFollow(true);
   }, []);
 
-  const gpsTone = telemetry?.fix ? "safe" : telemetry?.terbaca ? "warn" : telemetry?.updatedAt ? "danger" : "idle";
-  const gpsLabel = telemetry?.fix
+  const gpsFix = Boolean(telemetry?.online && telemetry?.fix && position);
+  const gpsTone = gpsFix ? "safe" : telemetry?.online ? "warn" : telemetry?.updatedAt ? "danger" : "idle";
+  const gpsLabel = gpsFix
     ? "GPS fix"
-    : telemetry?.terbaca
-      ? "Mencari satelit"
+    : telemetry?.online
+      ? "GPS belum fix"
       : telemetry?.updatedAt
-        ? "GPS tidak terbaca"
+        ? "GPS terputus"
         : "Menunggu GPS";
   const hasTelemetry = Boolean(telemetry?.updatedAt || telemetry?.fix || telemetry?.terbaca);
+  const gpsHeaderMessage = telemetry?.online
+    ? "GPS belum fix · bawa rompi ke area terbuka"
+    : hasTelemetry
+      ? "Menunggu data GPS dari rompi"
+      : "Menunggu data dari rompi";
+  const gpsWaitMessage = telemetry?.online
+    ? "GPS belum mendapat koordinat. GPS sulit menerima sinyal di dalam ruangan; bawa rompi ke area terbuka dan pastikan antena/modul GPS terhubung."
+    : hasTelemetry
+      ? "Data GPS dari rompi terputus. Periksa koneksi perangkat."
+      : "Menunggu data dari sensor GPS ESP32-S3.";
   const deviceTone = telemetry?.online ? "safe" : hasTelemetry ? "danger" : "idle";
   const deviceLabel = telemetry?.online ? "Rompi online" : hasTelemetry ? "Rompi offline" : "Rompi belum kirim data";
 
@@ -511,7 +472,7 @@ export default function GpsMap({ position, detections = [], telemetry, trail = [
                 {position.updated ? <span>· {position.updated}</span> : null}
               </>
             ) : (
-              <span>{hasTelemetry ? "Menunggu GPS mendapat sinyal satelit" : "Menunggu data dari rompi"}</span>
+              <span>{gpsHeaderMessage}</span>
             )}
           </p>
         </div>
@@ -522,7 +483,12 @@ export default function GpsMap({ position, detections = [], telemetry, trail = [
       </div>
 
       <div className="vc-map-wrap">
-        {useEmbed ? (
+        {!position ? (
+          <div className="vc-map-empty" role="status">
+            <strong>{telemetry?.online ? "Koordinat GPS belum terdeteksi" : "Menunggu sensor GPS"}</strong>
+            <span>{gpsWaitMessage}</span>
+          </div>
+        ) : useEmbed ? (
           <GoogleMapEmbed
             position={position}
             defaultCenter={config.center}
@@ -544,11 +510,7 @@ export default function GpsMap({ position, detections = [], telemetry, trail = [
           />
         )}
 
-        {!position && (
-          <div className="vc-map-wait" role="status">Menunggu koordinat GPS rompi</div>
-        )}
-
-        {!useEmbed && (
+        {position && !useEmbed && (
           <div className="vc-map-tools">
             <button type="button" onClick={() => setTilt3d((value) => !value)} className="vc-map-follow" aria-pressed={tilt3d}>
               <Icon name="mountain" size={14} />
@@ -575,8 +537,6 @@ export default function GpsMap({ position, detections = [], telemetry, trail = [
           </div>
         </div>
       )}
-      {!config.apiKey && <ApiKeyNotice />}
-
       <div className="vc-telemetry">
         <Metric
           label="Jarak sensor"

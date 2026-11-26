@@ -198,7 +198,7 @@ def main() -> None:
         )
     else:
         server = uvicorn.Server(
-            uvicorn.Config(app, host=HOST, port=PORT, reload=False)
+            uvicorn.Config(app, host=HOST, port=PORT, reload=False, access_log=False)
         )
         server_thread = threading.Thread(target=server.run, daemon=True)
         server_thread.start()

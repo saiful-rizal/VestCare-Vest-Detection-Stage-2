@@ -152,14 +152,6 @@ function readMapConfig(payload) {
   };
 }
 
-function historyPosition(entry) {
-  if (!entry) return null;
-  if (entry.posisi && entry.posisi.lat != null && entry.posisi.lng != null) {
-    return toPosition({ ...entry.posisi, updated: entry.waktu });
-  }
-  return toPosition(entry);
-}
-
 // Satu-satunya tempat data hidup. Komponen lain hanya menerima props.
 export default function useVestData() {
   const [state, setState] = useState(initialState);
@@ -198,13 +190,13 @@ export default function useVestData() {
       if (!telemetry) return;
 
       setState((current) => {
-        const position = telemetry.fix
+        const position = telemetry.online && telemetry.fix
           ? {
             lat: telemetry.lat,
             lng: telemetry.lng,
             updated: telemetry.waktu || formatTime(Date.now()),
           }
-          : current.position;
+          : null;
 
         return {
           ...current,
@@ -322,13 +314,9 @@ export default function useVestData() {
 
         const device = toDevice(dashboard?.device);
         const rows = Array.isArray(dashboard?.detections) ? dashboard.detections : [];
-        const dashboardPosition = dashboard && Object.prototype.hasOwnProperty.call(dashboard, "gps")
-          ? toPosition(dashboard.gps)
-          : toPosition(rows.find((row) => row.lat != null && row.lng != null));
 
         let history = null;
         let latestHistoryDetections = null;
-        let historyPositionValue = null;
         try {
           const historyPayload = await getJson("/riwayat?limit=20");
           if (Array.isArray(historyPayload.data)) {
@@ -336,7 +324,6 @@ export default function useVestData() {
             latestHistoryDetections = historyPayload.data.length
               ? normalizeDetections(historyPayload.data[0])
               : [];
-            historyPositionValue = historyPosition(historyPayload.data[0]);
           }
         } catch {
           history = null;
@@ -344,13 +331,14 @@ export default function useVestData() {
 
         if (!active) return;
         setState((current) => {
-          const telemetryFresh = current.telemetry?.fix
+          const telemetryFresh = current.telemetry?.online
+            && current.telemetry?.fix
             && current.telemetry?.updatedAt
             && Date.now() - current.telemetry.updatedAt < TELEMETRI_STALE_MS;
 
           const position = telemetryFresh
             ? current.position
-            : dashboardPosition || historyPositionValue || current.position;
+            : null;
 
           let nextDevice = device ? { ...current.device, ...device } : current.device;
           if (!nextDevice.id && !nextDevice.name) {

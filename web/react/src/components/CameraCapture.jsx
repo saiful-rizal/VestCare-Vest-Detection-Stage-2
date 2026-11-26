@@ -6,14 +6,23 @@ import { apiFetch, errorMessage } from "../api";
 const API_URL = "/deteksi";
 const ESP32_FRAME_URL = "/api/esp32/frame/latest";
 const ESP32_STATUS_URL = "/api/esp32/status";
-const ESP32_FRAME_POLL_INTERVAL_MS = 150;
-const ESP32_DETECTION_POLL_INTERVAL_MS = 200;
+const ESP32_FRAME_POLL_INTERVAL_MS = 100;
 const REALTIME_DETECTION_INTERVAL_MS = 80;
 const REALTIME_REQUEST_TIMEOUT_MS = 60000;
 const CAPTURE_MAX_WIDTH = 640;
 const CAPTURE_JPEG_QUALITY = 0.85;
-const BOX_SMOOTHING = 0.72;
+const BOX_SMOOTHING = 0.9;
 const MAX_TRACK_CENTER_DISTANCE = 0.3;
+const CLOSE_FRONT_ALERT_DISTANCE_M = 0.5;
+const BUZZER_STALE_TIMEOUT_MS = 1500;
+
+function isCloseFrontObject(detection) {
+  return !detection.ragu
+    && detection.arah === "depan"
+    && Number.isFinite(detection.distance)
+    && detection.distance > 0
+    && detection.distance < CLOSE_FRONT_ALERT_DISTANCE_M;
+}
 
 function createSessionId() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID().replace(/-/g, "");
@@ -121,6 +130,10 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
   const esp32FrameLoadedRef = useRef(false);
   const boxesRef = useRef(null);
   const audioRef = useRef(null);
+  const buzzerContextRef = useRef(null);
+  const buzzerOscillatorRef = useRef(null);
+  const buzzerGainRef = useRef(null);
+  const lastBuzzerDetectionAtRef = useRef(0);
   const silentAudioUrlRef = useRef(null);
   const audioUnlockedRef = useRef(false);
   const audioTokenRef = useRef(0);
@@ -155,6 +168,9 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
     isPlayingRef.current = false;
     cancelPlaybackRef.current?.();
     audioRef.current?.pause();
+    stopBuzzer();
+    void buzzerContextRef.current?.close();
+    buzzerContextRef.current = null;
     if (silentAudioUrlRef.current) URL.revokeObjectURL(silentAudioUrlRef.current);
   }, []);
 
@@ -177,6 +193,18 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
   }, []);
 
   useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (
+        buzzerOscillatorRef.current
+        && Date.now() - lastBuzzerDetectionAtRef.current > BUZZER_STALE_TIMEOUT_MS
+      ) {
+        stopBuzzer();
+      }
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
     if (!esp32FrameUrl) return undefined;
     return () => URL.revokeObjectURL(esp32FrameUrl);
   }, [esp32FrameUrl]);
@@ -195,6 +223,20 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
   }
 
   async function unlockAudio() {
+    const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+    if (AudioContextConstructor) {
+      try {
+        if (!buzzerContextRef.current || buzzerContextRef.current.state === "closed") {
+          buzzerContextRef.current = new AudioContextConstructor();
+        }
+        if (buzzerContextRef.current.state !== "running") {
+          await buzzerContextRef.current.resume();
+        }
+      } catch {
+        setMessage("Buzzer browser belum aktif. Pastikan audio diizinkan, lalu buka kamera kembali.");
+      }
+    }
+
     const audio = audioRef.current;
     const silentUrl = silentAudioUrlRef.current;
     if (!audio || !silentUrl || audioUnlockedRef.current) return audioUnlockedRef.current;
@@ -215,6 +257,55 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
       setMessage("Suara belum diizinkan browser. Aktifkan suara lalu buka kamera kembali.");
       return false;
     }
+  }
+
+  function stopBuzzer() {
+    const oscillator = buzzerOscillatorRef.current;
+    const gain = buzzerGainRef.current;
+    if (!oscillator || !gain) return;
+
+    const context = buzzerContextRef.current;
+    if (context?.state === "running") {
+      const now = context.currentTime;
+      gain.gain.cancelScheduledValues(now);
+      gain.gain.setTargetAtTime(0.0001, now, 0.01);
+      oscillator.stop(now + 0.04);
+    } else if (context?.state !== "closed") {
+      oscillator.stop();
+    }
+
+    buzzerOscillatorRef.current = null;
+    buzzerGainRef.current = null;
+  }
+
+  function buzzForCloseFront(detections) {
+    lastBuzzerDetectionAtRef.current = Date.now();
+    if (!detections.some(isCloseFrontObject)) {
+      stopBuzzer();
+      return;
+    }
+
+    const context = buzzerContextRef.current;
+    if (!context || context.state !== "running" || buzzerOscillatorRef.current) return;
+
+    const startAt = context.currentTime;
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = "square";
+    oscillator.frequency.setValueAtTime(880, startAt);
+    gain.gain.setValueAtTime(0.0001, startAt);
+    gain.gain.exponentialRampToValueAtTime(0.16, startAt + 0.02);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.onended = () => {
+      if (buzzerOscillatorRef.current === oscillator) {
+        buzzerOscillatorRef.current = null;
+        buzzerGainRef.current = null;
+      }
+    };
+    buzzerOscillatorRef.current = oscillator;
+    buzzerGainRef.current = gain;
+    oscillator.start(startAt);
   }
 
   function playUrl(url) {
@@ -319,12 +410,14 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
     if (status !== "esp32") return undefined;
 
     let active = true;
-    let timer = null;
+    let reconnectTimer = null;
+    let eventSource = null;
     let lastUpdatedAt = 0;
     let previousDetections = [];
     let lastAudioSignature = "";
     let lastAudioLevel = 0;
     let lastSpokenAt = 0;
+    let lastSessionRefreshAt = 0;
 
     function applyLatestDetection(payload) {
       const updatedAt = Number(payload?.updated_at);
@@ -334,6 +427,7 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
         || (Number.isFinite(serverAge) ? serverAge > 30 : Date.now() / 1000 - updatedAt > 30);
 
       if (stale) {
+        stopBuzzer();
         if (lastUpdatedAt !== 0) {
           lastUpdatedAt = 0;
           previousDetections = [];
@@ -348,13 +442,14 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
       if (updatedAt <= lastUpdatedAt || !payload?.data) return;
 
       const detections = smoothDetectionBoxes(
-        normalizeDetections(payload.data),
+        normalizeDetections(payload.data, { includeUncertain: true }),
         previousDetections,
       );
       previousDetections = detections;
       lastUpdatedAt = updatedAt;
+      buzzForCloseFront(detections);
       setLiveDetections(detections);
-      onDetectionsRef.current(detections);
+      onDetectionsRef.current(detections.filter((detection) => !detection.ragu));
 
       const plan = payload.data.suara;
       const level = String(plan?.level || "AMAN").toUpperCase();
@@ -391,18 +486,21 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
       }
     }
 
-    let failures = 0;
-    let etag = "";
-    async function pollLatestDetection() {
+    const staleTimer = window.setInterval(() => {
+      if (!lastUpdatedAt || Date.now() / 1000 - lastUpdatedAt <= 30) return;
+      lastUpdatedAt = 0;
+      previousDetections = [];
+      setLiveDetections([]);
+      onDetectionsRef.current([]);
+      if (audioRef.current?.paused) {
+        setMessage("Menunggu hasil deteksi terbaru dari kamera ESP32...");
+      }
+    }, 1000);
+
+    async function connectDetectionStream() {
       try {
-        const headers = { "ngrok-skip-browser-warning": "1" };
-        if (etag) headers["If-None-Match"] = etag;
-        const response = await apiFetch("/api/deteksi/latest", { headers });
+        const response = await apiFetch("/api/deteksi/latest");
         if (!active) return;
-        if (response.status === 304) {
-          failures = 0;
-          return;
-        }
         const payload = await response.json().catch(() => ({}));
         if (!active) return;
         if (!response.ok) {
@@ -411,28 +509,52 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
             `Server VestCare mengembalikan ${response.status}.`,
           ));
         }
-        etag = response.headers.get("ETag") || etag;
-        failures = 0;
         applyLatestDetection(payload);
+        eventSource = new EventSource("/api/deteksi/stream");
+        eventSource.onmessage = (event) => {
+          try {
+            applyLatestDetection(JSON.parse(event.data));
+          } catch {
+            setMessage("Respons realtime deteksi tidak dapat dibaca.");
+          }
+        };
+        eventSource.onerror = () => {
+          const now = Date.now();
+          if (!active || now - lastSessionRefreshAt < 5000) return;
+          lastSessionRefreshAt = now;
+          void apiFetch("/api/deteksi/latest")
+            .then(async (sessionResponse) => {
+              const sessionPayload = await sessionResponse.json().catch(() => ({}));
+              if (!sessionResponse.ok) {
+                throw new Error(errorMessage(
+                  sessionPayload,
+                  `Server VestCare mengembalikan ${sessionResponse.status}.`,
+                ));
+              }
+              applyLatestDetection(sessionPayload);
+            })
+            .catch((error) => {
+              if (!active) return;
+              setMessage(error instanceof Error
+                ? `Koneksi hasil deteksi gagal: ${error.message}`
+                : "Koneksi hasil deteksi gagal.");
+            });
+        };
       } catch (error) {
         if (!active) return;
-        failures = Math.min(failures + 1, 4);
-        if (failures >= 3) {
-          setMessage(error instanceof Error
-            ? `Koneksi hasil deteksi gagal: ${error.message}`
-            : "Koneksi hasil deteksi gagal.");
-        }
-      }
-      if (active) {
-        const delay = Math.min(ESP32_DETECTION_POLL_INTERVAL_MS * (2 ** failures), 1200);
-        timer = window.setTimeout(pollLatestDetection, delay);
+        setMessage(error instanceof Error
+          ? `Koneksi hasil deteksi gagal: ${error.message}`
+          : "Koneksi hasil deteksi gagal.");
+        reconnectTimer = window.setTimeout(connectDetectionStream, 1000);
       }
     }
 
-    void pollLatestDetection();
+    void connectDetectionStream();
     return () => {
       active = false;
-      if (timer) window.clearTimeout(timer);
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      window.clearInterval(staleTimer);
+      eventSource?.close();
     };
   }, [status]);
 
@@ -532,17 +654,20 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
         const [left, top, right, bottom] = detection.bbox || [];
         if (![left, top, right, bottom].every(Number.isFinite)) return;
 
-        const color = detection.level === "BAHAYA" ? "#ff4055"
+        const color = detection.ragu ? "#60a5fa"
+          : detection.level === "BAHAYA" ? "#ff4055"
           : detection.level === "WASPADA" ? "#ffbd35"
           : detection.level === "INFO" ? "#46dd91" : "#31c7e8";
         const x = offsetX + left * image.naturalWidth * scale;
         const y = offsetY + top * image.naturalHeight * scale;
         const width = (right - left) * image.naturalWidth * scale;
         const height = (bottom - top) * image.naturalHeight * scale;
-        const label = `${labelObjek(detection)} ${Math.round(detection.confidence)}%`;
+        const label = `${labelObjek(detection)} ${Math.round(detection.confidence)}%${detection.ragu ? " | KANDIDAT" : ""}`;
 
         context.strokeStyle = color;
+        context.setLineDash(detection.ragu ? [6, 4] : []);
         context.strokeRect(x, y, width, height);
+        context.setLineDash([]);
         context.fillStyle = color;
         const labelY = Math.max(0, y - 22);
         context.fillRect(x, labelY, context.measureText(label).width + 12, 20);
@@ -613,14 +738,17 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
         const y = offsetY + top * video.videoHeight * scale;
         const boxWidth = (right - left) * video.videoWidth * scale;
         const boxHeight = (bottom - top) * video.videoHeight * scale;
-        const color = detection.level === "BAHAYA" ? "#ff4055"
+        const color = detection.ragu ? "#60a5fa"
+          : detection.level === "BAHAYA" ? "#ff4055"
           : detection.level === "WASPADA" ? "#ffbd35"
           : detection.level === "INFO" ? "#46dd91" : "#31c7e8";
         const gerak = labelGerak(detection);
-        const label = `${labelObjek(detection)} | ${detection.level} | ${detection.distance.toFixed(1)} m${gerak ? ` | ${gerak}` : ""}`;
+        const label = `${labelObjek(detection)} | ${detection.level} | ${detection.distance.toFixed(1)} m${gerak ? ` | ${gerak}` : ""}${detection.ragu ? " | KANDIDAT" : ""}`;
 
         context.strokeStyle = color;
+        context.setLineDash(detection.ragu ? [6, 4] : []);
         context.strokeRect(x, y, boxWidth, boxHeight);
+        context.setLineDash([]);
         context.fillStyle = color;
         const labelY = Math.max(0, y - 24);
         context.fillRect(x, labelY, context.measureText(label).width + 12, 22);
@@ -673,12 +801,16 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
         }
         failures = 0;
 
-        const detections = smoothDetectionBoxes(normalizeDetections(payload), previousDetections);
+        const detections = smoothDetectionBoxes(
+          normalizeDetections(payload, { includeUncertain: true }),
+          previousDetections,
+        );
         previousDetections = detections;
+        buzzForCloseFront(detections);
         setLiveDetections(detections);
         renderBoxes(detections);
-        onDetectionsRef.current(detections);
-        const alerts = detections.filter((detection) => detection.level !== "AMAN");
+        onDetectionsRef.current(detections.filter((detection) => !detection.ragu));
+        const alerts = detections.filter((detection) => !detection.ragu && detection.level !== "AMAN");
         const now = Date.now();
         const hasAudioPlan = Array.isArray(payload.suara?.segmen) && payload.suara.segmen.length > 0;
 
@@ -751,6 +883,7 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
   }
 
   function openEsp32Camera() {
+    stopBuzzer();
     stopBrowserStream();
     esp32FrameLoadedRef.current = false;
     setEsp32FrameUrl(null);
@@ -763,6 +896,7 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
   }
 
   async function openBrowserCamera() {
+    stopBuzzer();
     stopBrowserStream();
     if (!navigator.mediaDevices?.getUserMedia) {
       inputRef.current?.click();
@@ -846,6 +980,7 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
   }
 
   function closePreview() {
+    stopBuzzer();
     stopAudio();
     stopBrowserStream();
     esp32FrameLoadedRef.current = false;
@@ -885,8 +1020,9 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
         ));
       }
 
-      const detections = normalizeDetections(payload);
-      onDetections(detections);
+      const detections = normalizeDetections(payload, { includeUncertain: true });
+      buzzForCloseFront(detections);
+      onDetections(detections.filter((detection) => !detection.ragu));
       setLiveDetections(detections);
       setStatus("success");
       setMessage(detections.length
@@ -998,7 +1134,7 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
               <ul className="vc-camera-results">
                 {liveDetections.map((detection, index) => (
                   <li key={Number.isFinite(detection.id) ? `id-${detection.id}` : `${detection.object}-${detection.arah}-${index}`}>
-                    <strong>{detection.level} | {labelObjek(detection)} {detection.arah}</strong>
+                    <strong>{detection.level} | {labelObjek(detection)} {detection.arah}{detection.ragu ? " | KANDIDAT" : ""}</strong>
                     <span>
                       {detection.distance.toFixed(1)} m | confidence {Math.round(detection.confidence)}%
                       {labelGerak(detection) ? ` | ${labelGerak(detection)}` : ""}
@@ -1063,7 +1199,7 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
               <ul className="vc-camera-results">
                 {liveDetections.map((detection, index) => (
                   <li key={Number.isFinite(detection.id) ? `id-${detection.id}` : `${detection.object}-${detection.arah}-${index}`}>
-                    <strong>{detection.level} | {labelObjek(detection)} {detection.arah}</strong>
+                    <strong>{detection.level} | {labelObjek(detection)} {detection.arah}{detection.ragu ? " | KANDIDAT" : ""}</strong>
                     <span>
                       {detection.distance.toFixed(1)} m | confidence {Math.round(detection.confidence)}%
                       {labelGerak(detection) ? ` | ${labelGerak(detection)}` : ""}

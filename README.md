@@ -307,15 +307,16 @@ Fuzzy logic mengubah hasil segmentasi menjadi skor urgensi 0 sampai 100. Impleme
 
 1. Gambar diterima server, lalu dijalankan melalui YOLO26n-seg pada `imgsz=512`.
 2. Setiap objek menghasilkan kelas, confidence, bounding box, dan mask.
-3. Objek dengan confidence di bawah `VEST_CONF` dibuang. Ambang khusus lubang adalah 0,80.
+3. Objek dengan confidence di bawah `VEST_CONF` dibuang. Ambang kandidat lubang adalah 0,35.
 4. Objek dengan confidence di bawah `VEST_CONF_RAGU` tetap dikirim di JSON, tetapi ditandai `ragu: true`.
-5. Objek `ragu` diabaikan oleh ringkasan, memori, perencana suara, penyimpanan Supabase, dan tampilan UI.
-6. Jarak objek diestimasi dari geometri kamera. Jika ada sensor ultrasonik di depan, jarak kamera dan ultrasonik difusikan dengan nilai minimum.
+5. Objek `ragu` ditampilkan di tampilan kamera sebagai kotak kandidat, tetapi tidak dipakai untuk ringkasan, peringatan, memori, atau penyimpanan Supabase.
+6. Jarak objek diestimasi dari geometri kamera (tinggi 1,00 m dan kemiringan 10 derajat). Jika ada sensor ultrasonik di depan, jarak kamera dan ultrasonik difusikan dengan nilai minimum hingga 3,00 m.
 7. Arah objek ditentukan dari posisi tengah bounding box: kiri, depan, atau kanan.
 8. Tingkat bahaya kelas ditetapkan: lubang, motor, dan mobil bernilai 10; orang dan pohon bernilai 6.
 9. Tingkat keterhalangan jalur dihitung dari irisan mask objek dengan koridor jalan di depan pengguna.
 10. Tiga variabel fuzzy dihitung: jarak, bahaya, dan jalur.
 11. Sebanyak 26 aturan Sugeno dievaluasi dengan operator minimum.
+12. Jika objek yakin berada di depan pada jarak kurang dari 0,50 m, buzzer browser berbunyi terus sampai objek tidak lagi terdeteksi dekat. Buzzer berhenti otomatis jika hasil deteksi tidak diperbarui selama 1,5 detik.
 12. Defuzzifikasi memakai rata-rata berbobot nilai singleton untuk menghasilkan skor urgensi.
 13. Skor urgensi dipetakan menjadi level AMAN, INFO, WASPADA, atau BAHAYA.
 14. Level menentukan pola getar dan rencana suara.
@@ -408,7 +409,7 @@ Jika klip gerak belum tersedia, sistem memakai fallback `benda_{kelas}_{arah}_ne
 13. Frame dengan signature objek, level, dan arah yang sama dilewati selama 10 detik untuk mencegah duplikasi.
 14. Dashboard membaca `devices`, `detections`, dan `gps_log` melalui `GET /dashboard/data`. Server memakai service-role key dan cookie sesi HttpOnly, sehingga kunci rahasia tidak pernah masuk ke browser.
 15. Jika Supabase belum lengkap atau sedang offline, dashboard memakai fallback `GET /riwayat`.
-16. Dashboard memuat ulang perangkat dan riwayat setiap 10 detik. Telemetri didorong lewat SSE dan tetap dipolling setiap 500 ms agar tunnel yang menahan SSE tidak membuat status macet. Status rompi online jika telemetri atau frame kamera baru diterima dalam 15 detik; dashboard memeriksa snapshot dan hasil deteksi ESP32 setiap 150 ms.
+16. Dashboard memuat ulang perangkat dan riwayat setiap 10 detik. Telemetri didorong lewat SSE dan tetap dipolling setiap 500 ms agar tunnel yang menahan SSE tidak membuat status macet. Status rompi online jika telemetri atau frame kamera baru diterima dalam 15 detik; dashboard memeriksa snapshot kamera setiap 100 ms dan menerima hasil deteksi ESP32 lewat SSE.
 
 Audio bukan diputar saat dashboard dimulai. Saat kamera ESP32 aktif, peringatan dari `POST /deteksi` diputar melalui output audio browser dan tidak diulang pada setiap frame. TWS dapat dipakai bila dipasangkan ke ponsel/komputer yang membuka dashboard dan dipilih sebagai output audio. ESP32-S3 tidak mengirim audio langsung ke TWS.
 
@@ -437,6 +438,7 @@ Audio bukan diputar saat dashboard dimulai. Saat kamera ESP32 aktif, peringatan 
 Catatan skema:
 
 - Server menyimpan posisi GPS valid dari telemetri Wemos ke `gps_log`; dashboard mengutamakan posisi live dan tidak menampilkan posisi tersimpan ketika perangkat online tetapi GPS belum mendapat fix.
+- Peta dashboard memakai koordinat GPS live dari ESP32-S3 saja; posisi lama dari riwayat/Supabase tidak dipakai sebagai pengganti fix GPS. Fix dianggap aktif selama data lokasi diperbarui dalam 5 detik terakhir. Jika koordinat belum tersedia, dashboard meminta pengguna membawa rompi ke area terbuka karena sinyal GPS sulit diterima di dalam ruangan.
 - Latitude dan longitude dikirim sebagai derajat desimal (`lat`, `lng`), sesuai urutan yang dipakai peta Google Maps.
 - Peta dashboard memakai Google Maps. Bila `GOOGLE_MAPS_API_KEY` diisi, peta memakai Google Maps JavaScript API sehingga marker rompi, jejak perjalanan, dan marker objek bergerak realtime. Bila kunci belum diisi, dashboard otomatis memakai Google Maps mode embed dan tetap menampilkan koordinat, jarak, satelit, HDOP, kecepatan, dan waktu GPS dari Wemos.
 - Marker objek pada peta adalah perkiraan dari arah (`kiri`/`depan`/`kanan`) dan jarak deteksi terhadap posisi rompi. Bila baris deteksi sudah memiliki `lat`/`lng`, koordinat itu yang dipakai.
@@ -625,6 +627,8 @@ python server.py
 
 Dengan `VEST_HOST=0.0.0.0`, server dapat menerima koneksi lokal dan memulai Cloudflare Quick Tunnel. URL `trycloudflare.com` langsung menampilkan dashboard React, sedangkan `/app` tetap menjadi alias. Dokumentasi interaktif tersedia di `/docs`. URL publik terakhir juga disimpan di `data/runtime/public_url.txt`. ESP32-S3 memakai domain Railway sebagai default; untuk server lokal, set `VEST_USE_LAN_DISCOVERY=1` agar memakai discovery UDP port `4211` pada LAN yang sama. Build dashboard perlu diperbarui dengan `npm run build` setiap kali source React berubah.
 
+Request GET dan POST dicatat di terminal dengan metode, path, status HTTP, dan waktu proses, misalnya `[HTTP] GET /status -> 200 (3.2 ms)`. Query string, header, dan isi request tidak dicatat.
+
 ### Deploy Railway
 
 Dockerfile repository membangun dashboard React dan API FastAPI dalam satu
@@ -677,7 +681,7 @@ cepat muncul; naikkan lagi bila akurasi lebih penting.
 Untuk menjalankan lokal, tetap gunakan `python server.py`; perintah itu yang
 menyalakan Cloudflare Quick Tunnel dan discovery UDP LAN.
 
-Peta dashboard memakai Google Maps. Isi `GOOGLE_MAPS_API_KEY` pada `.env` root dengan kunci Google Maps JavaScript API yang dibatasi untuk domain dashboard yang digunakan. Kunci dibaca saat server berjalan melalui `/config`, jadi mengganti kunci tidak memerlukan build ulang. Bila kunci kosong atau ditolak, dashboard otomatis memakai Google Maps mode embed agar lokasi perangkat tetap terlihat.
+Peta dashboard memakai Google Maps. Untuk Railway, tambahkan `GOOGLE_MAPS_API_KEY` pada **Service → Variables** dengan key Google Maps JavaScript API yang dibatasi ke domain dashboard dan API Maps JavaScript. Restart atau deploy ulang service agar konfigurasi server terbaca melalui `/config`; build ulang frontend tidak diperlukan. Untuk server lokal, pastikan variabel tersedia pada environment proses server. Bila key kosong atau ditolak, dashboard otomatis memakai Google Maps mode embed agar lokasi perangkat tetap terlihat.
 
 ### Menghubungkan Wemos ke server dan dashboard
 

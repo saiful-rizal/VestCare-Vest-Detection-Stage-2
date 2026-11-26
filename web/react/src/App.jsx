@@ -1,3 +1,5 @@
+import { useContext } from "react";
+import { AuthContext } from "./AuthGate";
 import Navbar from "./components/Navbar";
 import Sidebar from "./components/Sidebar";
 import StatCards from "./components/StatCards";
@@ -9,7 +11,16 @@ import Footer from "./components/Footer";
 import CameraCapture from "./components/CameraCapture";
 import useVestData from "./useVestData";
 
+function getLoginDisplayName(user) {
+  const metadata = user?.user_metadata || {};
+  const metadataName = [metadata.full_name, metadata.name, metadata.user_name]
+    .find((name) => typeof name === "string" && name.trim());
+  if (metadataName) return metadataName.trim();
+  return typeof user?.email === "string" ? user.email.split("@")[0].trim() : "";
+}
+
 export default function App() {
+  const user = useContext(AuthContext);
   const [{
     device,
     position,
@@ -22,6 +33,8 @@ export default function App() {
     detectionHistoryLoading,
     detectionHistoryError,
   }, setState] = useVestData();
+  const loginName = getLoginDisplayName(user);
+  const displayDevice = loginName ? { ...device, studentName: loginName } : device;
 
   function addDetections(newDetections) {
     setState((state) => ({
@@ -35,12 +48,12 @@ export default function App() {
 
   return (
     <div className="vc-app">
-      <Sidebar device={device} online={telemetryOnline ?? device.online} />
+      <Sidebar device={displayDevice} online={telemetryOnline ?? device.online} />
       <div className="vc-main">
-      <Navbar device={device} position={position} telemetry={telemetry} telemetryOnline={telemetryOnline} />
+      <Navbar device={displayDevice} position={position} telemetry={telemetry} telemetryOnline={telemetryOnline} />
       <main className="vc-shell vc-page">
         <StatCards
-          device={device}
+          device={displayDevice}
           detections={detections}
           telemetry={telemetry}
           telemetryOnline={telemetryOnline}
@@ -57,7 +70,7 @@ export default function App() {
             mapConfig={mapConfig}
           />
           <div className="vc-side">
-            <StudentCard device={device} />
+            <StudentCard device={displayDevice} />
             <CategoryList detections={detections} />
           </div>
         </div>

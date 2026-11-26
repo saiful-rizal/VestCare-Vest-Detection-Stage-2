@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
+import { createContext, useEffect, useState } from "react";
 import { supabase } from "./supabaseClient";
 import LoginPage from "./components/LoginPage";
+
+export const AuthContext = createContext(null);
 
 export default function AuthGate({ children }) {
   const [session, setSession] = useState(null);
@@ -48,5 +50,5 @@ export default function AuthGate({ children }) {
     );
   }
   if (!session) return <LoginPage initialError={error} />;
-  return children;
+  return <AuthContext.Provider value={session.user}>{children}</AuthContext.Provider>;
 }

@@ -19,7 +19,14 @@ import time
 import urllib.parse
 import uuid
 from collections import deque
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterable, Mapping
+from collections.abc import (
+    Awaitable,
+    AsyncGenerator,
+    AsyncIterator,
+    Callable,
+    Iterable,
+    Mapping,
+)
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime
@@ -148,6 +155,7 @@ DEFAULT_SUARA_FOLDER = ROOT / "data" / "runtime" / "audio" / "cache_ardi"
 DEFAULT_CONF = 0.35
 DEFAULT_CONF_RAGU = 0.50
 DEFAULT_IMGSZ = 512
+ALERT_FRONT_DISTANCE_M = 0.5
 
 from fuzzysugeno import (
     KELAS_ID_KE_NAMA,
@@ -242,6 +250,16 @@ class InferensiVest:
 
     @staticmethod
     def ke_dict(hasil: HasilInferensi) -> JsonRecord:
+        close_front_object = any(
+            item.get("arah") == "depan"
+            and isinstance(item.get("jarak_m"), (int, float))
+            and 0 <= item["jarak_m"] < ALERT_FRONT_DISTANCE_M
+            for item in hasil.deteksi_yakin
+        )
+        alert = {"BAHAYA": 2, "WASPADA": 1}.get(hasil.level_tertinggi, 0)
+        if close_front_object:
+            alert = 2
+
         return {
             "waktu": hasil.waktu,
             "jumlah_objek": hasil.jumlah_objek,
@@ -249,6 +267,7 @@ class InferensiVest:
             "jumlah_ragu": hasil.jumlah_ragu,
             "level_tertinggi": hasil.level_tertinggi,
             "urgensi_tertinggi": round(hasil.urgensi_tertinggi, 1),
+            "alert": alert,
             "aksi_suara": hasil.aksi_suara,
             "suara_diputar": hasil.suara_diputar,
             "deteksi": hasil.deteksi,
@@ -724,6 +743,38 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["ETag", "X-Request-Id"],
 )
+
+
+@app.middleware("http")
+async def log_request_http(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
+) -> Response:
+    if request.method not in {"GET", "POST"}:
+        return await call_next(request)
+
+    mulai = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        durasi_ms = (time.perf_counter() - mulai) * 1000
+        logger.error(
+            "[HTTP] %s %s gagal (%.1f ms)",
+            request.method,
+            request.url.path,
+            durasi_ms,
+        )
+        raise
+
+    durasi_ms = (time.perf_counter() - mulai) * 1000
+    logger.info(
+        "[HTTP] %s %s -> %d (%.1f ms)",
+        request.method,
+        request.url.path,
+        response.status_code,
+        durasi_ms,
+    )
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -1768,7 +1819,7 @@ async def deteksi_stream(
                 yield ": keep-alive\n\n"
                 kirim_terakhir = sekarang
 
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
 
     return StreamingResponse(
         peristiwa(),
