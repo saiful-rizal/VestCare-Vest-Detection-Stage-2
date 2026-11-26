@@ -125,6 +125,9 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
   const audioUnlockedRef = useRef(false);
   const audioTokenRef = useRef(0);
   const cancelPlaybackRef = useRef(null);
+  const isPlayingRef = useRef(false);
+  const lastPlayedSignatureRef = useRef("");
+  const lastPlayedAtRef = useRef(0);
   const streamRef = useRef(null);
   const sessionIdRef = useRef(createSessionId());
   const detectingRef = useRef(false);
@@ -134,7 +137,6 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
   const [file, setFile] = useState(null);
   const [liveDetections, setLiveDetections] = useState([]);
   const [esp32FrameUrl, setEsp32FrameUrl] = useState(null);
-  const [audioOutputName, setAudioOutputName] = useState("");
   const [status, setStatus] = useState("idle");
   const [message, setMessage] = useState("");
   // Status tampilan saja: apakah gambar stream ESP32 berhasil dimuat.
@@ -150,6 +152,7 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
   useEffect(() => () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     audioTokenRef.current += 1;
+    isPlayingRef.current = false;
     cancelPlaybackRef.current?.();
     audioRef.current?.pause();
     if (silentAudioUrlRef.current) URL.revokeObjectURL(silentAudioUrlRef.current);
@@ -180,6 +183,8 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
 
   function stopAudio() {
     audioTokenRef.current += 1;
+    isPlayingRef.current = false;
+    isPlayingRef.current = false;
     cancelPlaybackRef.current?.();
     cancelPlaybackRef.current = null;
     const audio = audioRef.current;
@@ -209,30 +214,6 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
       audio.load();
       setMessage("Suara belum diizinkan browser. Aktifkan suara lalu buka kamera kembali.");
       return false;
-    }
-  }
-
-  async function chooseAudioOutput() {
-    const audio = audioRef.current;
-    const mediaDevices = navigator.mediaDevices;
-    if (
-      !audio
-      || typeof audio.setSinkId !== "function"
-      || typeof mediaDevices?.selectAudioOutput !== "function"
-    ) {
-      setMessage("Pasangkan TWS ke perangkat yang membuka dashboard, lalu pilih sebagai output suara perangkat.");
-      return;
-    }
-
-    try {
-      const output = await mediaDevices.selectAudioOutput();
-      await audio.setSinkId(output.deviceId);
-      setAudioOutputName(output.label || "Output TWS");
-      setMessage(`Suara peringatan dialihkan ke ${output.label || "output pilihan"}.`);
-    } catch (error) {
-      setMessage(error instanceof Error
-        ? `Output suara tidak dapat dipilih: ${error.message}`
-        : "Output suara tidak dapat dipilih.");
     }
   }
 
@@ -270,25 +251,51 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
       setMessage("Instruksi suara tidak tersedia untuk hasil deteksi ini.");
       return;
     }
+
     if (!audioUnlockedRef.current) {
       setMessage("Hasil terdeteksi, tetapi suara belum diizinkan browser. Tutup lalu buka kamera kembali.");
       return;
     }
 
+    const signature = `${plan.level || ""}:${plan.aksi || ""}:${plan.segmen
+      .map((segment) => segment.kunci || "")
+      .join("|")}`;
+    const now = Date.now();
+
+    if (isPlayingRef.current) return;
+
+    if (
+      signature === lastPlayedSignatureRef.current
+      && now - lastPlayedAtRef.current < 1800
+    ) {
+      return;
+    }
+
     stopAudio();
     const token = audioTokenRef.current;
+
+    isPlayingRef.current = true;
+    lastPlayedSignatureRef.current = signature;
+    lastPlayedAtRef.current = now;
+
     setMessage(`Memutar instruksi ${plan.level}...`);
+
     try {
       for (const segment of plan.segmen) {
         if (token !== audioTokenRef.current) return;
         await playUrl(segment.url);
       }
+
       if (token === audioTokenRef.current) {
         setMessage(`Instruksi ${plan.level} selesai diputar.`);
       }
     } catch (error) {
       if (token === audioTokenRef.current) {
         setMessage(`Suara gagal diputar: ${error.message}`);
+      }
+    } finally {
+      if (token === audioTokenRef.current) {
+        isPlayingRef.current = false;
       }
     }
   }
@@ -1066,9 +1073,6 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
               </ul>
             )}
             <div className="vc-camera-footer flex justify-end gap-2 mt-4">
-              <button type="button" className="vc-camera-secondary" onClick={chooseAudioOutput}>
-                {audioOutputName ? `Audio: ${audioOutputName}` : "Pilih TWS"}
-              </button>
               <button type="button" className="vc-camera-secondary" onClick={switchToBrowser}>
                 Kamera perangkat
               </button>
