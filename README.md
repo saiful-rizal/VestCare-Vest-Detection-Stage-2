@@ -411,7 +411,7 @@ Jika klip gerak belum tersedia, sistem memakai fallback `benda_{kelas}_{arah}_ne
 15. Jika Supabase belum lengkap atau sedang offline, dashboard memakai fallback `GET /riwayat`.
 16. Dashboard memuat ulang perangkat dan riwayat setiap 10 detik. Telemetri didorong lewat SSE dan tetap dipolling setiap 500 ms agar tunnel yang menahan SSE tidak membuat status macet. Status rompi online jika telemetri atau frame kamera baru diterima dalam 15 detik; dashboard memeriksa snapshot kamera setiap 100 ms dan menerima hasil deteksi ESP32 lewat SSE.
 
-Audio bukan diputar saat dashboard dimulai. Saat kamera ESP32 aktif, peringatan dari `POST /deteksi` diputar melalui output audio browser dan tidak diulang pada setiap frame. TWS dapat dipakai bila dipasangkan ke ponsel/komputer yang membuka dashboard dan dipilih sebagai output audio. ESP32-S3 tidak mengirim audio langsung ke TWS.
+Audio tidak diputar otomatis saat dashboard dimulai. Klik **Aktifkan alarm dashboard** untuk menerima buzzer dari hasil deteksi live tanpa membuka kamera; browser mewajibkan interaksi ini untuk mengizinkan audio. Saat kamera ESP32 aktif, peringatan suara dari deteksi juga diputar melalui output audio browser. TWS dapat dipakai bila dipasangkan ke ponsel/komputer yang membuka dashboard dan dipilih sebagai output audio. ESP32-S3 tidak mengirim audio langsung ke TWS.
 
 ### Tabel alur data
 

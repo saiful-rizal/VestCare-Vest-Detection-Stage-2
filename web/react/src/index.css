@@ -407,7 +407,12 @@ button, input, select, textarea, .font-sans { font-family: var(--font); }
 /* ---------- Tombol deteksi (FAB) ---------- */
 .vc-camera-fab { position: fixed; right: 28px; bottom: 28px; z-index: 900; display: flex; align-items: center; gap: 10px; height: 54px; padding: 0 22px; border: 0; border-radius: 999px; background: linear-gradient(135deg, #e0202c, #a10e17); color: #fff; box-shadow: 0 14px 30px -6px var(--brand-glow), 0 0 0 1px rgba(255, 255, 255, .12) inset; font: 600 14px var(--font); cursor: pointer; transition: transform .2s, box-shadow .2s; }
 .vc-camera-fab:hover { transform: translateY(-2px); box-shadow: 0 18px 36px -6px var(--brand-glow), 0 0 0 1px rgba(255, 255, 255, .18) inset; }
+.vc-dashboard-buzzer-control { position: fixed; right: 28px; bottom: 92px; z-index: 900; display: grid; justify-items: end; gap: 8px; }
+.vc-dashboard-buzzer { min-height: 46px; padding: 0 16px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--surface); color: var(--ink); box-shadow: var(--shadow-float); font: 600 13px var(--font); cursor: pointer; }
+.vc-dashboard-buzzer[aria-pressed="true"] { border-color: #1f8a5b; background: #1f8a5b; color: #fff; }
+.vc-dashboard-buzzer-error { max-width: min(320px, 85vw); margin: 0; padding: 8px 12px; border: 1px solid #ef4444; border-radius: 12px; background: var(--surface); color: #b91c1c; box-shadow: var(--shadow-float); font-size: 12px; }
 @media (max-width: 640px) { .vc-camera-fab { right: 16px; bottom: 16px; width: 56px; height: 56px; justify-content: center; padding: 0; } .vc-camera-fab span { display: none; } }
+@media (max-width: 640px) { .vc-dashboard-buzzer-control { right: 16px; bottom: calc(84px + 64px + env(safe-area-inset-bottom, 0px)); } }
 
 
 /* ---------- Dialog kamera ---------- */

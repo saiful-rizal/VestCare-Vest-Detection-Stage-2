@@ -131,6 +131,7 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
   const boxesRef = useRef(null);
   const audioRef = useRef(null);
   const buzzerContextRef = useRef(null);
+  const dashboardBuzzerEnabledRef = useRef(false);
   const buzzerOscillatorRef = useRef(null);
   const buzzerGainRef = useRef(null);
   const lastBuzzerDetectionAtRef = useRef(0);
@@ -152,6 +153,8 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
   const [esp32FrameUrl, setEsp32FrameUrl] = useState(null);
   const [status, setStatus] = useState("idle");
   const [message, setMessage] = useState("");
+  const [dashboardBuzzerEnabled, setDashboardBuzzerEnabled] = useState(false);
+  const [dashboardBuzzerError, setDashboardBuzzerError] = useState("");
   // Status tampilan saja: apakah gambar stream ESP32 berhasil dimuat.
   const [streamState, setStreamState] = useState("connecting");
   useEffect(() => {
@@ -259,6 +262,29 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
     }
   }
 
+  async function enableDashboardBuzzer() {
+    await unlockAudio();
+    if (buzzerContextRef.current?.state !== "running") {
+      setDashboardBuzzerError("Browser belum mengizinkan audio. Izinkan suara lalu coba lagi.");
+      return false;
+    }
+    dashboardBuzzerEnabledRef.current = true;
+    setDashboardBuzzerEnabled(true);
+    setDashboardBuzzerError("");
+    return true;
+  }
+
+  function toggleDashboardBuzzer() {
+    if (dashboardBuzzerEnabledRef.current) {
+      dashboardBuzzerEnabledRef.current = false;
+      setDashboardBuzzerEnabled(false);
+      setDashboardBuzzerError("");
+      stopBuzzer();
+      return;
+    }
+    void enableDashboardBuzzer();
+  }
+
   function stopBuzzer() {
     const oscillator = buzzerOscillatorRef.current;
     const gain = buzzerGainRef.current;
@@ -280,7 +306,7 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
 
   function buzzForCloseFront(detections) {
     lastBuzzerDetectionAtRef.current = Date.now();
-    if (!detections.some(isCloseFrontObject)) {
+    if (!dashboardBuzzerEnabledRef.current || !detections.some(isCloseFrontObject)) {
       stopBuzzer();
       return;
     }
@@ -557,6 +583,82 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
       eventSource?.close();
     };
   }, [status]);
+
+  useEffect(() => {
+    if (
+      !dashboardBuzzerEnabled
+      || status === "esp32"
+      || status === "camera"
+    ) return undefined;
+
+    let active = true;
+    let reconnectTimer = null;
+    let eventSource = null;
+    let lastSessionRefreshAt = 0;
+
+    function applyDashboardDetection(payload) {
+      const updatedAt = Number(payload?.updated_at);
+      const serverAge = Number(payload?.umur_detik);
+      const stale = payload?.online === false
+        || !Number.isFinite(updatedAt)
+        || (Number.isFinite(serverAge) ? serverAge > 30 : Date.now() / 1000 - updatedAt > 30);
+
+      if (stale || !payload?.data) {
+        buzzForCloseFront([]);
+        return;
+      }
+      buzzForCloseFront(normalizeDetections(payload.data, { includeUncertain: true }));
+    }
+
+    async function readLatestDetection() {
+      const response = await apiFetch("/api/deteksi/latest");
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(errorMessage(
+          payload,
+          `Server VestCare mengembalikan ${response.status}.`,
+        ));
+      }
+      applyDashboardDetection(payload);
+    }
+
+    async function connectDetectionStream() {
+      try {
+        await readLatestDetection();
+        if (!active) return;
+        eventSource = new EventSource("/api/deteksi/stream");
+        eventSource.onopen = () => setDashboardBuzzerError("");
+        eventSource.onmessage = (event) => {
+          try {
+            applyDashboardDetection(JSON.parse(event.data));
+          } catch {
+            setDashboardBuzzerError("Respons deteksi realtime tidak dapat dibaca.");
+          }
+        };
+        eventSource.onerror = () => {
+          const now = Date.now();
+          if (!active || now - lastSessionRefreshAt < 5000) return;
+          lastSessionRefreshAt = now;
+          void readLatestDetection().catch((error) => {
+            if (!active) return;
+            setDashboardBuzzerError(error instanceof Error ? error.message : String(error));
+          });
+        };
+      } catch (error) {
+        if (!active) return;
+        setDashboardBuzzerError(error instanceof Error ? error.message : String(error));
+        reconnectTimer = window.setTimeout(connectDetectionStream, 1000);
+      }
+    }
+
+    void connectDetectionStream();
+    return () => {
+      active = false;
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      eventSource?.close();
+      stopBuzzer();
+    };
+  }, [dashboardBuzzerEnabled, status]);
 
   useEffect(() => {
     if (status !== "esp32") return undefined;
@@ -941,7 +1043,7 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
     if (openingRef.current) return;
     openingRef.current = true;
     try {
-      await unlockAudio();
+      await enableDashboardBuzzer();
       // Jangan memaksa mode ESP32: jika rompi belum mengirim frame, dashboard
       // otomatis memakai kamera perangkat agar tombol Deteksi tetap berfungsi.
       if (await esp32CameraAvailable()) {
@@ -955,7 +1057,7 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
   }
 
   async function switchToEsp32() {
-    await unlockAudio();
+    await enableDashboardBuzzer();
     if (await esp32CameraAvailable()) {
       openEsp32Camera();
     } else {
@@ -964,7 +1066,7 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
   }
 
   async function switchToBrowser() {
-    await unlockAudio();
+    await enableDashboardBuzzer();
     await openBrowserCamera();
   }
 
@@ -999,7 +1101,7 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
   async function submitDetection() {
     if (!file) return;
 
-    await unlockAudio();
+    await enableDashboardBuzzer();
     setStatus("loading");
     setMessage("");
     const body = new FormData();
@@ -1056,6 +1158,19 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
 
   return (
     <>
+      <div className="vc-dashboard-buzzer-control">
+        {dashboardBuzzerError && (
+          <p className="vc-dashboard-buzzer-error" role="alert">{dashboardBuzzerError}</p>
+        )}
+        <button
+          type="button"
+          className="vc-dashboard-buzzer"
+          aria-pressed={dashboardBuzzerEnabled}
+          onClick={toggleDashboardBuzzer}
+        >
+          {dashboardBuzzerEnabled ? "Alarm dashboard aktif" : "Aktifkan alarm dashboard"}
+        </button>
+      </div>
       <button
         type="button"
         className="vc-camera-fab"
