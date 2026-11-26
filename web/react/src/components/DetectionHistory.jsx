@@ -59,7 +59,7 @@ export default function DetectionHistory({ detections }) {
         <div className="vc-empty vc-tone-idle">
           <span className="vc-seg-chip"><Icon name="clock" size={20} /></span>
           <strong>Belum ada riwayat deteksi</strong>
-          <span>Tekan tombol Deteksi di pojok kanan bawah untuk mencoba dari kamera.</span>
+          <span>Hasil deteksi akan muncul otomatis saat rompi mengirim data.</span>
         </div>
       ) : (
         <>
@@ -83,10 +83,13 @@ export default function DetectionHistory({ detections }) {
                 const tone = toneOf(d);
                 const when = splitWhen(d.time);
                 return (
-                  <li key={d.id || `${d.object}-${d.time}-${i}`} className={`vc-hist-item vc-tone-${tone}`}>
+                  <li key={d.liveHistoryId || d.id || `${d.object}-${d.time}-${i}`} className={`vc-hist-item vc-tone-${tone}`}>
                     <span className="vc-hist-icon"><Icon name={OBJECT_ICON[d.object] || "alert"} size={20} /></span>
                     <div style={{ minWidth: 0 }}>
-                      <p className="vc-hist-name">{d.object}</p>
+                      <p className="vc-hist-name">
+                        {d.object}
+                        {d.liveHistoryId && <span className="vc-badge vc-hist-live-badge">LIVE</span>}
+                      </p>
                       <p className="vc-hist-meta">
                         <span>{[when.date, when.clock].filter(Boolean).join(" · ")}</span>
                         <span>{fmt(d.distance)} m</span>

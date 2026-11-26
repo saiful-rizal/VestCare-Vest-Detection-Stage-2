@@ -84,6 +84,25 @@ function labelObjek(detection) {
   return Number.isFinite(detection.id) ? `${detection.object} #${detection.id}` : detection.object;
 }
 
+function getVoiceDecision(plan, previousSignature, previousLevel, lastSpokenAt, now, audioPaused) {
+  const level = String(plan?.level || "AMAN").toUpperCase();
+  const levelRank = { AMAN: 0, INFO: 1, WASPADA: 2, BAHAYA: 3 }[level] || 0;
+  const segments = Array.isArray(plan?.segmen) ? plan.segmen : [];
+  const signature = `${level}:${plan?.aksi || ""}:${segments
+    .map((segment) => segment.kunci || "")
+    .join("|")}`;
+  const escalation = levelRank > previousLevel;
+  const shouldSpeak = levelRank > 0
+    && segments.length > 0
+    && (
+      (escalation && now - lastSpokenAt >= 1200)
+      || (signature !== previousSignature && audioPaused && now - lastSpokenAt >= 1800)
+      || (signature === previousSignature && audioPaused && now - lastSpokenAt >= 8000)
+    );
+
+  return { levelRank, signature, shouldSpeak };
+}
+
 function createSilentWavUrl() {
   const sampleRate = 8000;
   const sampleCount = 800;
@@ -218,6 +237,15 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
           dashboardLatestPlanRef.current,
         );
       }
+      if (
+        ready
+        && dashboardVoicePendingRef.current
+        && !isPlayingRef.current
+        && dashboardLatestPlanRef.current?.segmen?.length
+      ) {
+        dashboardVoicePendingRef.current = false;
+        void playPlan(dashboardLatestPlanRef.current);
+      }
 
       if (ready) {
         document.removeEventListener("pointerdown", onUserInteraction, true);
@@ -344,11 +372,10 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
 
   function buzzForCloseFront(detections, plan = null) {
     lastBuzzerDetectionAtRef.current = Date.now();
+    dashboardLatestPlanRef.current = plan;
     if (!detections.some(isCloseFrontObject)) {
       dashboardAlarmActiveRef.current = false;
-      dashboardVoicePendingRef.current = false;
       dashboardLatestDetectionsRef.current = [];
-      dashboardLatestPlanRef.current = null;
       setDashboardAlarmActive(false);
       stopBuzzer();
       return;
@@ -356,9 +383,8 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
 
     const newlyActive = !dashboardAlarmActiveRef.current;
     dashboardAlarmActiveRef.current = true;
-    dashboardVoicePendingRef.current = dashboardVoicePendingRef.current || newlyActive;
     dashboardLatestDetectionsRef.current = detections;
-    dashboardLatestPlanRef.current = plan || dashboardLatestPlanRef.current;
+    dashboardVoicePendingRef.current = dashboardVoicePendingRef.current || newlyActive;
     setDashboardAlarmActive(true);
 
     const context = buzzerContextRef.current;
@@ -383,15 +409,14 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
       oscillator.start(startAt);
     }
 
-    const latestPlan = plan || dashboardLatestPlanRef.current;
     if (
       dashboardVoicePendingRef.current
       && audioUnlockedRef.current
       && !isPlayingRef.current
-      && latestPlan?.segmen?.length
+      && dashboardLatestPlanRef.current?.segmen?.length
     ) {
       dashboardVoicePendingRef.current = false;
-      void playPlan(latestPlan);
+      void playPlan(dashboardLatestPlanRef.current);
     }
   }
 
@@ -515,6 +540,11 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
 
       if (stale) {
         stopBuzzer();
+        dashboardAlarmActiveRef.current = false;
+        dashboardVoicePendingRef.current = false;
+        dashboardLatestDetectionsRef.current = [];
+        dashboardLatestPlanRef.current = null;
+        setDashboardAlarmActive(false);
         if (lastUpdatedAt !== 0) {
           lastUpdatedAt = 0;
           previousDetections = [];
@@ -539,34 +569,28 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
       setLiveDetections(detections);
       onDetectionsRef.current(detections.filter((detection) => !detection.ragu));
 
-      const level = String(plan?.level || "AMAN").toUpperCase();
-      const levelRank = { AMAN: 0, INFO: 1, WASPADA: 2, BAHAYA: 3 }[level] || 0;
-      const signature = `${level}:${plan?.aksi || ""}:${(plan?.segmen || [])
-        .map((segment) => segment.kunci || "")
-        .join("|")}`;
       const now = Date.now();
       const audioPaused = audioRef.current?.paused !== false;
-      const escalation = levelRank > lastAudioLevel;
-      const shouldSpeak = levelRank > 0
-        && Array.isArray(plan?.segmen)
-        && plan.segmen.length > 0
-        && (
-          (escalation && now - lastSpokenAt >= 1200)
-          || (signature !== lastAudioSignature && audioPaused && now - lastSpokenAt >= 1800)
-          || (signature === lastAudioSignature && audioPaused && now - lastSpokenAt >= 8000)
-        );
+      const voice = getVoiceDecision(
+        plan,
+        lastAudioSignature,
+        lastAudioLevel,
+        lastSpokenAt,
+        now,
+        audioPaused,
+      );
 
-      if (shouldSpeak) {
-        lastAudioSignature = signature;
-        lastAudioLevel = levelRank;
+      if (voice.shouldSpeak) {
+        lastAudioSignature = voice.signature;
+        lastAudioLevel = voice.levelRank;
         lastSpokenAt = now;
         void playPlan(plan);
-      } else if (levelRank === 0 && now - lastSpokenAt > 5000) {
+      } else if (voice.levelRank === 0 && now - lastSpokenAt > 5000) {
         lastAudioSignature = "";
         lastAudioLevel = 0;
       }
 
-      if (audioPaused && !shouldSpeak) {
+      if (audioPaused && !voice.shouldSpeak) {
         setMessage(detections.length
           ? `${detections.length} objek terdeteksi dari kamera ESP32.`
           : "Kamera ESP32 aktif. Belum ada objek yang yakin.");
@@ -577,6 +601,12 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
       if (!lastUpdatedAt || Date.now() / 1000 - lastUpdatedAt <= 30) return;
       lastUpdatedAt = 0;
       previousDetections = [];
+      dashboardVoicePendingRef.current = false;
+      dashboardLatestDetectionsRef.current = [];
+      dashboardLatestPlanRef.current = null;
+      dashboardAlarmActiveRef.current = false;
+      setDashboardAlarmActive(false);
+      stopBuzzer();
       setLiveDetections([]);
       onDetectionsRef.current([]);
       if (audioRef.current?.paused) {
@@ -653,6 +683,9 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
     let eventSource = null;
     let lastUpdatedAt = 0;
     let lastDetectionAt = 0;
+    let lastAudioSignature = "";
+    let lastAudioLevel = 0;
+    let lastSpokenAt = 0;
     let lastSessionRefreshAt = 0;
 
     function applyDashboardDetection(payload) {
@@ -668,16 +701,51 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
         onDetectionsRef.current([]);
         lastUpdatedAt = 0;
         lastDetectionAt = 0;
+        lastAudioSignature = "";
+        lastAudioLevel = 0;
+        lastSpokenAt = 0;
+        dashboardVoicePendingRef.current = false;
+        dashboardLatestPlanRef.current = null;
         return;
       }
       if (updatedAt <= lastUpdatedAt) return;
 
       const detections = normalizeDetections(payload.data, { includeUncertain: true });
+      const plan = payload.data.suara;
       lastUpdatedAt = updatedAt;
       lastDetectionAt = Date.now();
       setLiveDetections(detections);
       onDetectionsRef.current(detections.filter((detection) => !detection.ragu));
-      buzzForCloseFront(detections, payload.data.suara);
+      buzzForCloseFront(detections, plan);
+      dashboardLatestPlanRef.current = plan || null;
+
+      const now = Date.now();
+      const audioPaused = audioRef.current?.paused !== false;
+      const voice = getVoiceDecision(
+        plan,
+        lastAudioSignature,
+        lastAudioLevel,
+        lastSpokenAt,
+        now,
+        audioPaused,
+      );
+      if (voice.shouldSpeak) {
+        lastAudioSignature = voice.signature;
+        lastAudioLevel = voice.levelRank;
+        lastSpokenAt = now;
+        if (audioUnlockedRef.current) {
+          dashboardVoicePendingRef.current = false;
+          void playPlan(plan);
+        } else {
+          dashboardVoicePendingRef.current = true;
+        }
+      } else if (voice.levelRank === 0) {
+        dashboardVoicePendingRef.current = false;
+        if (now - lastSpokenAt > 5000) {
+          lastAudioSignature = "";
+          lastAudioLevel = 0;
+        }
+      }
     }
 
     async function readLatestDetection() {
@@ -728,6 +796,8 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
       setLiveDetections([]);
       onDetectionsRef.current([]);
       buzzForCloseFront([]);
+      dashboardVoicePendingRef.current = false;
+      dashboardLatestPlanRef.current = null;
     }, 1000);
 
     void connectDetectionStream();
@@ -1209,7 +1279,7 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
 
       const detections = normalizeDetections(payload, { includeUncertain: true });
       buzzForCloseFront(detections, payload.suara);
-      onDetections(detections.filter((detection) => !detection.ragu));
+      onDetections(detections.filter((detection) => !detection.ragu), { realtime: false });
       setLiveDetections(detections);
       setStatus("success");
       setMessage(detections.length

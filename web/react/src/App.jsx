@@ -1,4 +1,4 @@
-import { useContext } from "react";
+import { useContext, useRef, useState } from "react";
 import { AuthContext } from "./AuthGate";
 import Navbar from "./components/Navbar";
 import Sidebar from "./components/Sidebar";
@@ -21,6 +21,9 @@ function getLoginDisplayName(user) {
 
 export default function App() {
   const user = useContext(AuthContext);
+  const [realtimeHistory, setRealtimeHistory] = useState([]);
+  const activeRealtimeEventsRef = useRef(new Map());
+  const realtimeHistorySequenceRef = useRef(0);
   const [{
     device,
     position,
@@ -35,8 +38,57 @@ export default function App() {
   }, setState] = useVestData();
   const loginName = getLoginDisplayName(user);
   const displayDevice = loginName ? { ...device, studentName: loginName } : device;
+  const displayedHistory = [...realtimeHistory, ...history].slice(0, 20);
 
-  function addDetections(newDetections) {
+  function addDetections(newDetections, { realtime = true } = {}) {
+    if (realtime) {
+      const previousEvents = activeRealtimeEventsRef.current;
+      const nextEvents = new Map();
+      const fallbackOccurrences = new Map();
+      const liveRows = newDetections.filter((detection) => !detection.ragu).map((detection) => {
+        let identity;
+        if (Number.isFinite(detection.id)) {
+          identity = `${detection.object}#${detection.id}`;
+        } else {
+          const base = `${detection.object}|${detection.arah || ""}|${detection.level}`;
+          const occurrence = fallbackOccurrences.get(base) || 0;
+          fallbackOccurrences.set(base, occurrence + 1);
+          identity = `${base}|${occurrence}`;
+        }
+
+        const eventKey = `${identity}|${detection.arah || ""}|${detection.level}`;
+        const liveHistoryId = previousEvents.get(eventKey)
+          || `live-${Date.now()}-${++realtimeHistorySequenceRef.current}`;
+        nextEvents.set(eventKey, liveHistoryId);
+        return { ...detection, liveHistoryId };
+      });
+
+      activeRealtimeEventsRef.current = nextEvents;
+      setRealtimeHistory((current) => {
+        const liveById = new Map(liveRows.map((row) => [row.liveHistoryId, row]));
+        const currentIds = new Set(current.map((row) => row.liveHistoryId));
+        let changed = false;
+        const updated = current.map((row) => {
+          const liveRow = liveById.get(row.liveHistoryId);
+          if (!liveRow) return row;
+          if (
+            row.time === liveRow.time
+            && row.distance === liveRow.distance
+            && row.confidence === liveRow.confidence
+          ) {
+            return row;
+          }
+          changed = true;
+          return { ...row, ...liveRow };
+        });
+        const added = liveRows.filter((row) => !currentIds.has(row.liveHistoryId));
+        if (!changed && !added.length) return current;
+        return [...added, ...updated].slice(0, 20);
+      });
+    } else {
+      activeRealtimeEventsRef.current = new Map();
+    }
+
     setState((state) => ({
       ...state,
       detections: newDetections,
@@ -75,7 +127,7 @@ export default function App() {
           </div>
         </div>
 
-        <DetectionHistory detections={history} />
+        <DetectionHistory detections={displayedHistory} />
         <Footer />
       </main>
       </div>
