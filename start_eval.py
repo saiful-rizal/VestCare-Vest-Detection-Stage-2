@@ -1,4 +1,3 @@
-"""Jalankan pipeline evaluasi final (tahap 08) dengan GPU secara default."""
 import argparse
 from contextlib import contextmanager
 from datetime import datetime
