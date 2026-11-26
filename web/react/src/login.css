@@ -236,7 +236,9 @@
 }
 
 .vc-login-input-wrap input {
+  flex: 1;
   width: 100%;
+  min-width: 0;
   height: 100%;
   border: 0;
   outline: 0;
@@ -246,6 +248,25 @@
 }
 
 .vc-login-input-wrap input::placeholder { color: #727887; }
+.vc-login-password-toggle {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  margin-right: -8px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #828999;
+  cursor: pointer;
+}
+
+.vc-login-password-toggle:hover { color: #fff; }
+.vc-login-password-toggle:focus-visible { outline-color: #ff7778; }
+.vc-login-password-toggle svg { width: 18px; stroke: currentColor; }
+
 .vc-login-text-button { padding: 0; border: 0; background: none; color: #ff7778; cursor: pointer; font: 500 11px var(--font); }
 .vc-login-text-button:hover { color: #ff9a9b; }
 .vc-login-text-button:disabled { cursor: wait; opacity: .6; }
