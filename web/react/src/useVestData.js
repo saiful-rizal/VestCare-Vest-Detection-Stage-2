@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { DEFAULT_MAP_CONFIG, initialState, normalizeDetections } from "./data";
 import { getJson } from "./api";
 

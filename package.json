@@ -3,6 +3,7 @@
     "@supabase/supabase-js": "^2.119.0"
   },
   "devDependencies": {
-    "railway": "^3.17.0"
+    "railway": "^3.17.0",
+    "supabase": "^3.4.0"
   }
 }

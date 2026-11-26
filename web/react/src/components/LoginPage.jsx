@@ -3,6 +3,8 @@ import { supabase } from "../supabaseClient";
 import studentImage from "../assets/img/student.png";
 import "../login.css";
 
+const GOOGLE_OAUTH_REDIRECT_URL = "https://vestcare-detection-object-production.up.railway.app";
+
 function GoogleMark() {
   return (
     <svg aria-hidden="true" viewBox="0 0 48 48" width="17" height="17">
@@ -16,6 +18,14 @@ function GoogleMark() {
 
 function getErrorMessage(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function getGoogleErrorMessage(error) {
+  const message = getErrorMessage(error);
+  if (/unsupported provider|provider.{0,80}(not enabled|disabled)/i.test(message)) {
+    return "Login Google belum aktif di Supabase. Aktifkan provider Google dan masukkan Client ID/Secret di Authentication > Sign In / Providers.";
+  }
+  return message;
 }
 
 export default function LoginPage({ initialError = "" }) {
@@ -68,11 +78,35 @@ export default function LoginPage({ initialError = "" }) {
     try {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
-        options: { redirectTo: window.location.origin },
+        options: { redirectTo: GOOGLE_OAUTH_REDIRECT_URL },
       });
       if (error) throw error;
     } catch (error) {
+      showMessage(getGoogleErrorMessage(error), true);
+      setSubmitting(false);
+    }
+  }
+
+  async function handleGuestSignIn() {
+    if (!supabase) {
+      showMessage("Autentikasi belum dikonfigurasi. Isi URL dan publishable key Supabase di environment frontend.", true);
+      return;
+    }
+
+    setSubmitting(true);
+    showMessage("");
+    try {
+      const { error } = await supabase.auth.signInAnonymously();
+      if (
+        error?.code === "anonymous_provider_disabled"
+        || error?.message?.toLowerCase().includes("anonymous sign-ins are disabled")
+      ) {
+        throw new Error("Login tamu belum aktif. Aktifkan Anonymous Sign-Ins di pengaturan Authentication Supabase.");
+      }
+      if (error) throw error;
+    } catch (error) {
       showMessage(getErrorMessage(error), true);
+    } finally {
       setSubmitting(false);
     }
   }
@@ -226,6 +260,14 @@ export default function LoginPage({ initialError = "" }) {
             <GoogleMark />
             <span>Lanjutkan dengan Google</span>
           </button>
+          <button className="vc-login-guest" disabled={submitting} onClick={handleGuestSignIn} type="button">
+            <svg aria-hidden="true" viewBox="0 0 24 24">
+              <circle cx="12" cy="8" r="3.5" />
+              <path d="M5 20a7 7 0 0 1 14 0" />
+            </svg>
+            <span>Masuk sebagai tamu</span>
+          </button>
+          <p className="vc-login-guest-note">Tanpa email atau ID; dashboard tetap realtime.</p>
 
           <p className="vc-login-switch">
             {isSignup ? "Sudah punya akun?" : "Belum punya akun?"}{" "}

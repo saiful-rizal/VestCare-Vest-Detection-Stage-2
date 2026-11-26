@@ -1,4 +1,4 @@
-import math
+﻿import math
 from collections.abc import Mapping
 from typing import Any, Callable, Optional, Sequence, cast
 
@@ -36,9 +36,9 @@ RASIO_GAMBAR = 3 / 4
 
 VFOV_DEG = math.degrees(2 * math.atan(math.tan(math.radians(HFOV_DEG / 2)) * RASIO_GAMBAR))
 
-TINGGI_KAMERA_M = 1.30
+TINGGI_KAMERA_M = 1.00
 
-TILT_BAWAH_DEG = 15.0
+TILT_BAWAH_DEG = 10.0
 
 KAMERA_MIN_M = round(TINGGI_KAMERA_M / math.tan(math.radians(VFOV_DEG / 2 + TILT_BAWAH_DEG)), 2)
 
@@ -628,3 +628,5 @@ if __name__ == "__main__":
         u = sugeno(j, BAHAYA_KELAS.get(k, BAHAYA_DEFAULT), p)
 
         print(f"{k:<12}{j:>6.1f}{p:>7.2f}{u:>9.1f}  {level(u)}")
+
+

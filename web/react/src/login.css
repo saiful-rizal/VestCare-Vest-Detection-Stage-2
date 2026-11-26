@@ -331,6 +331,26 @@
 }
 
 .vc-login-google:hover:not(:disabled) { transform: translateY(-1px); border-color: rgba(255, 255, 255, .32); }
+.vc-login-guest {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 42px;
+  margin-top: 9px;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 12px;
+  background: transparent;
+  color: #c3c7d0;
+  cursor: pointer;
+  font: 500 11px var(--font);
+  transition: background .18s, border-color .18s, color .18s;
+}
+
+.vc-login-guest:hover:not(:disabled) { border-color: rgba(255, 255, 255, .24); background: rgba(255, 255, 255, .05); color: #fff; }
+.vc-login-guest:disabled { cursor: wait; opacity: .65; }
+.vc-login-guest svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.6; }
+.vc-login-guest-note { margin: 7px 0 0; color: #727887; text-align: center; font-size: 10px; }
 .vc-login-switch { margin: 22px 0 0; color: #898e9c; text-align: center; font-size: 11px; }
 .vc-login-switch .vc-login-text-button { font-size: 11px; }
 .vc-login-footer { margin: 31px 0 0; color: #5f6470; text-align: center; font-size: 9px; }
