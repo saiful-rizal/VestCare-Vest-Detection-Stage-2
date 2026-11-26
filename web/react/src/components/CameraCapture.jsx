@@ -651,6 +651,8 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
     let active = true;
     let reconnectTimer = null;
     let eventSource = null;
+    let lastUpdatedAt = 0;
+    let lastDetectionAt = 0;
     let lastSessionRefreshAt = 0;
 
     function applyDashboardDetection(payload) {
@@ -662,12 +664,20 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
 
       if (stale || !payload?.data) {
         buzzForCloseFront([]);
+        setLiveDetections([]);
+        onDetectionsRef.current([]);
+        lastUpdatedAt = 0;
+        lastDetectionAt = 0;
         return;
       }
-      buzzForCloseFront(
-        normalizeDetections(payload.data, { includeUncertain: true }),
-        payload.data.suara,
-      );
+      if (updatedAt <= lastUpdatedAt) return;
+
+      const detections = normalizeDetections(payload.data, { includeUncertain: true });
+      lastUpdatedAt = updatedAt;
+      lastDetectionAt = Date.now();
+      setLiveDetections(detections);
+      onDetectionsRef.current(detections.filter((detection) => !detection.ragu));
+      buzzForCloseFront(detections, payload.data.suara);
     }
 
     async function readLatestDetection() {
@@ -711,10 +721,20 @@ export default function CameraCapture({ onDetections, deviceOnline, lastSeen }) 
       }
     }
 
+    const staleTimer = window.setInterval(() => {
+      if (!lastDetectionAt || Date.now() - lastDetectionAt <= 30000) return;
+      lastDetectionAt = 0;
+      lastUpdatedAt = 0;
+      setLiveDetections([]);
+      onDetectionsRef.current([]);
+      buzzForCloseFront([]);
+    }, 1000);
+
     void connectDetectionStream();
     return () => {
       active = false;
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      window.clearInterval(staleTimer);
       eventSource?.close();
       stopBuzzer();
       dashboardAlarmActiveRef.current = false;
