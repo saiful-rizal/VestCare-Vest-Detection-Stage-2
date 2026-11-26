@@ -2,9 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import avatar from "../assets/img/avatar.png";
 import Icon from "./Icon";
 import { COLOR, fmt, profile } from "../data";
+import { supabase } from "../supabaseClient";
 
 export default function ProfileMenu({ device, position, telemetry, telemetryOnline }) {
   const [open, setOpen] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+  const [logoutError, setLogoutError] = useState("");
   const ref = useRef(null);
 
   // tutup saat klik di luar / tekan Escape
@@ -29,6 +32,23 @@ export default function ProfileMenu({ device, position, telemetry, telemetryOnli
         ? "Tidak terbaca"
         : "-";
 
+  async function handleSignOut() {
+    setSigningOut(true);
+    setLogoutError("");
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) {
+        setLogoutError(error.message);
+        return;
+      }
+      setOpen(false);
+    } catch (error) {
+      setLogoutError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSigningOut(false);
+    }
+  }
+
   return (
     <div style={{ position: "relative" }} ref={ref}>
       <button
@@ -38,7 +58,10 @@ export default function ProfileMenu({ device, position, telemetry, telemetryOnli
         aria-expanded={open}
         aria-controls="profileMenu"
         aria-label="Profil dan detail perangkat"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => {
+          setOpen((o) => !o);
+          setLogoutError("");
+        }}
       >
         <img className="vc-avatar" src={avatar} alt="" />
         <Icon name="chevronDown" size={16} />
@@ -67,6 +90,13 @@ export default function ProfileMenu({ device, position, telemetry, telemetryOnli
             <span>{gpsLabel}{telemetry?.fix ? ` · ${telemetry.sat} satelit` : ""}</span>
           </div>
           <div className="vc-row"><span>Lokasi terakhir</span><span>{position ? `${position.lat.toFixed(5)}, ${position.lng.toFixed(5)}` : "Belum tersedia"}</span></div>
+          {logoutError && <p className="vc-menu-error" role="alert">{logoutError}</p>}
+          <button className="vc-menu-logout" disabled={signingOut} onClick={handleSignOut} type="button">
+            <svg aria-hidden="true" viewBox="0 0 24 24">
+              <path d="M10 17l5-5-5-5m5 5H3m9-9h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5" />
+            </svg>
+            {signingOut ? "Keluar..." : "Keluar"}
+          </button>
         </div>
       )}
     </div>

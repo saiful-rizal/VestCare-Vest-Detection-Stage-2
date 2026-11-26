@@ -195,6 +195,16 @@ button, input, select, textarea, .font-sans { font-family: var(--font); }
 .vc-row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; font-size: 13px; }
 .vc-row > span:first-child { color: var(--ink-3); }
 .vc-row > span:last-child { font-weight: 600; text-align: right; color: var(--ink); }
+.vc-menu-error { margin: 10px 0 0; color: var(--danger-ink); font-size: 12px; }
+.vc-menu-logout {
+  display: flex; align-items: center; justify-content: center; gap: 9px; width: 100%; min-height: 40px;
+  margin-top: 12px; padding: 0 12px; border: 1px solid var(--brand-tint); border-radius: 11px;
+  background: var(--brand-tint); color: var(--brand-ink); font: 600 13px var(--font); cursor: pointer;
+  transition: background-color .15s, border-color .15s;
+}
+.vc-menu-logout:hover:not(:disabled) { background: color-mix(in srgb, var(--brand-tint) 78%, var(--brand) 22%); border-color: var(--brand); }
+.vc-menu-logout:disabled { cursor: wait; opacity: .65; }
+.vc-menu-logout svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
 
 /* ---------- Tata letak halaman ---------- */
 .vc-page { padding: 24px 20px 110px; display: grid; gap: 20px; }
