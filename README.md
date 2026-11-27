@@ -259,6 +259,34 @@ VestCare-Vest-Detection-Stage-2/
 └── README.md        # Dokumentasi ini
 ```
 
+### Menampilkan Ringkasan Model ke Terminal
+
+Script `model_summary.py` dapat digunakan untuk menampilkan ringkasan arsitektur model YOLO26n-seg ke terminal saat dijalankan.
+
+**Cara menjalankan:**
+
+```bash
+python model_summary.py
+```
+
+**Output yang akan muncul di terminal meliputi:**
+
+1. **Informasi Model** - Tipe model, path file, ukuran input (512x512x3), dan task (Segmentation)
+2. **Statistik Parameter** - Informasi tentang total parameter dan parameter trainable
+3. **Arsitektur Layer Structure** - Detail lengkap setiap layer dari backbone dan head:
+   - **Backbone layers**: Conv, C3k2, SPPF, C2PSJ dengan jumlah repeat dan parameter
+   - **Head layers**: Upsample, Concat, C3k2, Conv, dan Segment26 output head
+   - **Output heads**: Klasifikasi (5 classes + 1 internal), Bounding box (4 koordinat), dan Mask segmentation
+4. **Tips Referensi** - Arahan ke README.md dan file konfigurasi YAML untuk detail lebih lanjut
+
+**Fungsi Script:**
+- Mengimport model dari folder `models/`
+- Membaca konfigurasi arsitektur dari `cfg/yolo26n-seg-semua-c3k.yaml`
+- Menampilkan struktur layer layer dalam format readable di terminal
+- Menunjukkan mapping antara konfigurasi arsitektur dan implementasi code
+
+Catatan: File model `.pt` dari Ultralytics menyimpan bobot yang sudah dilatih, sedangkan detail arsitektur lengkap disimpan dalam file konfigurasi YAML. Script ini menggabungkan keduanya untuk memberikan gambaran lengkap model.
+
 ---
 
 ## Penerbitan dan Lokasi Implementasi Code
