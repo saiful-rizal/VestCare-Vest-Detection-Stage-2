@@ -4,72 +4,94 @@
 
 Arsitektur ini berdasarkan model **YOLO26n-seg** yang merupakan versi nano (n) dari arsitektur YOLO untuk tugas segmentasi. Alur proses arsitektur secara menyeluruh dari input gambar hingga output deteksi adalah sebagai berikut:
 
-### Alur Proses Arsitektur (Secara Menyeluruh)
+### 1. Alur Proses Arsitektur (Secara Menyeluruh)
+
+Flowchart mermaid mendetailkan setiap tahap dari input gambar (512x512x3) hingga output deteksi kelas, bounding box, dan mask segmenisasi:
 
 ```mermaid
 flowchart LR
-    I["Input Gambar 512x512x3"] --> C1["Conv P1/2\n3x3, stride 2"]
-    C1 --> C2["Conv P2/4\n3x3, stride 2"]
-    C2 --> B1["C3k2 P2/4\nBottleneck C3k2"]
-    B1 --> C3["Conv P3/8\n3x3, stride 2"]
-    C3 --> B2["C3k2 P3/8\nBottleneck C3k2"]
-    B2 --> C4["Conv P4/16\n3x3, stride 2"]
-    C4 --> B3["C3k2 P4/16\nBottleneck C3k2"]
-    B3 --> C5["Conv P5/32\n3x3, stride 2"]
-    C5 --> B4["C3k2 P5/32\nBottleneck C3k2"]
-    B4 --> S["SPPF\nSpatial Pyramid Pooling Fast"]
-    S --> A["C2PSA\nC2 dengan perhatian spasial"]
-    A --> N["Neck\ngabungkan fitur P3/P4/P5"]
-    N --> H["Head Segmentasi\nkelas, kotak, mask"]
-    H --> O["Output: Deteksi\nClasses, Bounding Box, Mask"]
+    %% Input layer
+    I["Input Gambar 512x512x3\n(RGB channels)] --> C1["Conv P1/2\n3x3 kernel, stride 2\nOutput: 256x256x64"]
+    C1 --> C2["Conv P2/4\n3x3 kernel, stride 2\nOutput: 128x128x128"]
+    C2 --> B1["C3k2 P2/4\nBottleneck C3k2 (2x repeat)\nOutput: 128x128x128"]
+    B1 --> C3["Conv P3/8\n3x3 kernel, stride 2\nOutput: 64x64x256"]
+    C3 --> B2["C3k2 P3/8\nBottleneck C3k2 (2x repeat)\nOutput: 64x64x256"]
+    B2 --> C4["Conv P4/16\n3x3 kernel, stride 2\nOutput: 32x32x512"]
+    C4 --> B3["C3k2 P4/16\nBottleneck C3k2 (2x repeat)\nOutput: 32x32x512"]
+    B3 --> C5["Conv P5/32\n3x3 kernel, stride 2\nOutput: 16x16x1024"]
+    C5 --> B4["C3k2 P5/32\nBottleneck C3k2 (2x repeat)\nOutput: 16x16x1024"]
+    B4 --> S["SPPF\nSpatial Pyramid Pooling Fast\n(5x5 pooling, various strides)\nOutput: 16x16x1024"]
+    S --> A["C2PSA\nC2 dengan perhatian spasial\nOutput: 16x16x1024"]
+    A --> N["Neck\nFitur multi-scale P3/P4/P5\nOutput: Fused features"]
+    N --> H["Head Segmentasi\n3 head outputs]\n  - Klasifikasi kelas\n  - Bounding box (x, y, w, h)\n  - Mask segmenisasi\nOutput: Deteksi Classes, Bounding Box, Mask"]
+    H --> O["Output: Deteksi\nClasses, Bounding Box, Mask\n5 kelas vestcare + non-target internal"]
 ```
 
-### Detail Tahapan Lapisan per Tahap
+### 2. Dimensi Ukuran - Detail per Tahap/Lapisan
 
-| Tahap / Lapisan | Ukuran Filter (Kernel) | Tinggi | Lebar | Fungsi |
-|---|---|---|---|---|
-| **Input** | - | 512 | 512 | Gambar RGB input 512x512x3 |
-| **Conv P1/2** | 3x3 | - | - | Konvolusi awal dengan stride 2 untuk mengekstrak fitur dasar (tepi, tekstur); resolusi menjadi 1/2 dari input |
-| **Conv P2/4** | 3x3 | - | - | Konvolusi kedua dengan stride 2; memperkaya fitur awal; resolusi menjadi 1/4 input |
-| **C3k2 P2/4** | 3x3 (dalam blok) | - | - | Blok ekstraksi fitur berbasis bottleneck C3k2; mengolah pola awal dan meneruskan fitur ke lapisan selanjutnya |
-| **Conv P3/8** | 3x3 | - | - | Konvolusi dengan stride 2; menurunkan resolusi ke skala 1/8 dari input |
-| **C3k2 P3/8** | 3x3 (dalam blok) | - | - | Blok ekstraksi fitur C3k2 pada skala P3/8; memperkuat fitur objek kecil; keluarannya menjadi salah satu masukan neck |
-| **Conv P4/16** | 3x3 | - | - | Konvolusi dengan stride 2; menurunkan resolusi ke skala 1/16 dari input |
-| **C3k2 P4/16** | 3x3 (dalam blok) | - | - | Blok ekstraksi fitur C3k2 pada skala P4/16; memperkuat fitur objek sedang; keluarannya menjadi masukan neck |
-| **Conv P5/32** | 3x3 | - | - | Konvolusi dengan stride 2; menurunkan resolusi ke skala 1/32 dari input untuk konteks yang lebih luas |
-| **C3k2 P5/32** | 3x3 (dalam blok) | - | - | Blok ekstraksi fitur C3k2 pada skala P5/32; memperkuat fitur semantik objek besar sebelum SPPF |
-| **SPPF** | Pooling bertingkat | - | - | Spatial Pyramid Pooling - Fast; menggabungkan konteks dari area/reseptif yang lebih luas secara efisien |
-| **C2PSA** | 3x3 (dalam blok) | - | - | Blok C2 dengan perhatian spasial; memberikan bobot lebih pada area fitur penting sebelum fitur P5 diteruskan ke neck |
-| **Neck** | - | - | - | Menggabungkan fitur dari P3, P4, dan P5 (multi-scale features) |
-| **Head Segmentasi** | - | - | - | Memproses fitur multi-skala untuk menghasilkan prediksi: kelas objek, kotak pembatas (bounding box), dan mask segmenisasi |
+Tabel lengkap ukuran filter (kernel), tinggi, lebar, dan resolusi output setiap blok arsitektur YOLO26n-seg:
 
-### Fungsi Aktivasi
+| Tahap / Lapisan | Ukuran Filter (Kernel) | Tinggi | Lebar | Channel | Fungsi & Output Resolusi |
+|---|---|---|---|---|---|
+| **Input** | - | 512 | 512 | 3 (RGB) | Gambar RGB input 512x512x3 |
+| **Conv P1/2** | 3x3 | 256 | 256 | 64 | Konvolusi awal dengan stride 2 untuk mengekstrak fitur dasar (tepi, tekstur); resolusi menjadi 1/2 dari input (256x256x64) |
+| **Conv P2/4** | 3x3 | 128 | 128 | 128 | Konvolusi kedua dengan stride 2; memperkaya fitur awal; resolusi 1/4 input (128x128x128) |
+| **C3k2 P2/4** | 3x3 (dalam blok) | 128 | 128 | 128 | Blok ekstraksi fitur berbasis bottleneck C3k2 dengan 2 repeat; mengolah pola awal dan meneruskan fitur ke lapisan selanjutnya |
+| **Conv P3/8** | 3x3 | 64 | 64 | 256 | Konvolusi dengan stride 2; menurunkan resolusi ke skala 1/8 dari input (64x64x256) |
+| **C3k2 P3/8** | 3x3 (dalam blok) | 64 | 64 | 256 | Blok ekstraksi fitur C3k2 pada skala P3/8; memperkuat fitur objek kecil; keluarannya menjadi salah satu masukan neck |
+| **Conv P4/16** | 3x3 | 32 | 32 | 512 | Konvolusi dengan stride 2; menurunkan resolusi ke skala 1/16 dari input (32x32x512) |
+| **C3k2 P4/16** | 3x3 (dalam blok) | 32 | 32 | 512 | Blok ekstraksi fitur C3k2 pada skala P4/16; memperkuat fitur objek sedang; keluarannya menjadi masukan neck |
+| **Conv P5/32** | 3x3 | 16 | 16 | 1024 | Konvolusi dengan stride 2; menurunkan resolusi ke skala 1/32 dari input untuk konteks yang lebih luas (16x16x1024) |
+| **C3k2 P5/32** | 3x3 (dalam blok) | 16 | 16 | 1024 | Blok ekstraksi fitur C3k2 pada skala P5/32; memperkuat fitur semantik objek besar sebelum SPPF |
+| **SPPF** | Pooling bertingkat | 16 | 16 | 1024 | Spatial Pyramid Pooling - Fast; menggabungkan konteks dari area/reseptif yang lebih luas secara efisien dengan pooling tingkat piramida (k=5) |
+| **C2PSA** | 3x3 (dalam blok) | 16 | 16 | 1024 | Blok C2 dengan perhatian spasial (Spatial Attention); memberikan bobot lebih pada area fitur penting sebelum fitur P5 diteruskan ke neck |
+| **Neck** | - | - | - | - | Menggabungkan fitur dari P3, P4, dan P5 (multi-scale features) melalui operasi Concat dan Upsample; output fitur fused |
+| **Head Segmentasi** | - | - | - | - | Memproses fitur multi-skala untuk menghasilkan prediksi: kelas objek (5 classes), kotak pembatas (bounding box), dan mask segmenisasi |
 
-- **SiLU (Swish)** digunakan sebagai fungsi aktivasi utama di seluruh arsitektur YOLO26n-seg.
-- Fungsi ini juga dikenal sebagai `swish` dan ditetapakan sebagai `nn.SiLU` dalam implementasi PyTorch.
-- Fungsi SiLU didefinisikan sebagai: `f(x) = x * sigmoid(x)` atau `x / (1 + exp(-x))`.
-- Fungsi aktivasi ini membantu model belajar fitur yang lebih baik dan memiliki properti yang lebih smooth dibanding ReLU klasik.
+---
 
-### Batch Normalization (BatchNorm)
+### 3. Fungsi Aktivasi
 
-- **Batch Normalization tersedia** di setiap konvolusi (Conv layer) di seluruh backbone arsitektur.
-- Setiap lapisan Conv diikuti dengan BatchNorm untuk normalisasi output terhadap batch, yang membantu stabilisasi training dan mempercepat konvergensi.
-- Struktur blok C3k2 juga menyertakan komponen normalisasi internal.
-- Tidak ada layer secara eksplisit tanpa BatchNorm di susunan arsitektur standar ini.
+**SiLU (Swish)** digunakan sebagai fungsi aktivasi utama di seluruh arsitektur YOLO26n-seg.
 
-### Acuan Sumber dan Framework
+- Fungsi ini juga dikenal sebagai `swish` dan ditetapkan sebagai `nn.SiLU` dalam implementasi PyTorch.
+- **Definisi matematis**: `f(x) = x * sigmoid(x)` atau `f(x) = x / (1 + exp(-x))`
+- **Properti utama**:
+  - Fungsi yang smooth (tidak seperti ReLU yang memiliki gradien nol di bawah nol)
+  - Memiliki area negatif yang non-zero, yang membantu model mempelajari representasi yang lebih baik
+  - Berperforma lebih baik dari ReLU dalam beberapa arsitektur deep learning, terutama untuk tugas segmentasi
+- Aplikasi di proyek ini: Setiap lapisan konvolusi (`Conv`), blok `C3k2`, `C2PSA`, dan lainnya menggunakan SiLU setelah operasi perkalian dan penjumlahan bias.
+- *Catatan*: SiLU dipilih karena empirical evidence menunjukkan performa yang lebih baik dari ReLU dan Swish dalam model YOLO segmenrasi modern.
 
-#### Arsitektur Dasar
+---
+
+### 4. Batch Normalization (BatchNorm)
+
+- **Batch Normalization tersedia** di setiap konvolusi (Conv layer) di seluruh backbone arsitektur YOLO26n-seg.
+- **Setiap lapisan Conv diikuti dengan BatchNorm** untuk normalisasi output terhadap batch, yang membantu stabilisasi training dan mempercepat konvergensi.
+- **Struktur blok C3k2** juga menyertakan komponen normalisasi internal (BatchNorm dihimpulkan di dalam blok), sehingga setiap sub-block dalam C3k2 memiliki normalisasi sendiri.
+- Tidak ada layer konvolusi secara eksplisit tanpa BatchNorm di susunan arsitektur standar ini.
+- **Fungsi BatchNorm**: Melakukan normalisasi terhadap activasi dengan menghitung mean dan variance per batch, kemudian menskalasikan dan mem-shift hasilnya dengan parameter learnable (gamma dan beta). Ini membantu mengatasi masalah internal covariate shift dan memungkinkan learning rate yang lebih besar.
+
+---
+
+### 5. Acuan Sumber dan Framework
+
+#### 5.1 Arsitektur Dasar
+
 - Arsitektur berdasarkan **YOLOv8-seg** dengan adaptasi untuk 5 kelas vestcare (lubang, mobil, motor, orang, pohon).
-- Struktur backbone dan neck mengikuti definisi bawaan model YOLO26n-seg.
-- Merujuk pada diagram dan penjelasan lengkap yang ada di jurnal serta Presentasi PowerPoint (PPT) yang telah dibagikan sebelumnya.
-- Arsitektur default tanpa modifikasi tunai yang signifikan pada struktur utama.
+- Struktur backbone dan neck mengikuti definisi bawaan model YOLO26n-seg dengan modifikasi C3k2 (Conv-C3-kernel-two-times), SPPF, dan C2PSA.
+- Diagram dan penjelasan lengkap merujuk pada jurnal arsitektur serta Presentasi PowerPoint yang telah dibagikan sebelumnya.
+- Arsitektur default tanpa modifikasi tunai yang signifikan pada struktur utama; penyesuaian utama dilakukan pada jumlah kelas output (5 kelas + 1 kelas internal) dan konfigurasi dataset.
 
-#### Framework
-- **PyTorch**: Implementasi model dan seluruh operasi training/evaluasi dilakukan menggunakan framework PyTorch melalui library Ultralytics YOLO.
-- **Tensor**: Operasi tensor dilakukan di dalam PyTorch, termasuk forward pass, backward pass (backpropagation), dan semua operasi pada lapisan konvolusi, pooling, dan normalisasi.
-- **Ultralytics YOLO**: Library pengubah yang menyediakan model YO26n-seg, fungsi training, validasi, dan evaluasi.
-- **Python**: Semua kode server, inferensi, dan pengelolaan dataset ditulis dalam Python 3.
+#### 5.2 Framework
+
+- **PyTorch**: Implementasi model dan seluruh operasi training/evaluasi dilakukan menggunakan framework PyTorch melalui library Ultralytics YOLO. Semua operasi tensor, forward pass, backward pass (backpropagation), dan operasi pada lapisan konvolusi, pooling, dan normalisasi dilakukan di dalam PyTorch.
+- **Tensor**: Representasi data berupa tensor multidimensi yang mengalir melalui graph komputasi PyTorch. Operasi seperti konvolusi, pooling, activasi (SiLU), dan normalisasi semua bekerja pada tensor ini.
+- **Ultralytics YOLO**: Library pengubah yang menyediakan model YO26n-seg, fungsi training, validasi, dan evaluasi. Library ini meng-abstrak kompleksitas PyTorch menjadi API yang lebih sederhana untuk training dan inferensi.
+- **Python**: Semua kode server, inferensi, dan pengelolaan dataset ditulis dalam Python 3. Library PyTorch dan Ultralytics diasosiasikan melalui binding Python.
+
+---
 
 ### Ringkasan Konfigurasi Training
 
@@ -87,6 +109,8 @@ flowchart LR
 | **Seed** | 0 |
 | **Deterministic** | True |
 
+---
+
 ### Daftar Kelas Deteksi
 
 Model mendeteksi 5 kelas utama plus kelas internal penolak objek:
@@ -94,11 +118,13 @@ Model mendeteksi 5 kelas utama plus kelas internal penolak objek:
 | ID Kelas | Nama Kelas | Deskripsi |
 |----------|------------|-----------|
 | 0 | pohon | Pohon/plant deteksi |
-| 1 | mobil | Kendaraan motor road |
+| 1 | mobil | Kendaraan road |
 | 2 | motor | Sepeda motor |
 | 3 | orang | Orang/dewasa |
 | 4 | lubang | Lubang/celah deteksi |
 | 5 | __non_target_internal__ | Kelas internal untuk objek yang tidak target |
+
+---
 
 ### Alur Proses dari Input hingga Output Deteksi
 
@@ -119,6 +145,8 @@ Model mendeteksi 5 kelas utama plus kelas internal penolak objek:
    - Generasi output suara berdasarkan deteksi dan level urgensi
 8. **Output**: Deteksi lengkap dengan confidence score, kelas, mask, dan informasi urgensi yang diproses ke sistem suara
 
+---
+
 ### Pipeline Inferensi Lengkap
 
 ```mermaid
@@ -129,6 +157,8 @@ flowchart LR
     PostProcessing -->|Level Urgensi| Suara["Sistem Suara"]
     Suara -->|Output Audio| Antarmuka["Dashboard VestCare"]
 ```
+
+---
 
 ### Sistem Post-Processing & Suara
 
@@ -142,7 +172,9 @@ Setelah model menghasilkan deteksi, langkah-langkah berikut dilakukan:
    - Arah objek (kiri, depan, kanan)
    - Jarak objek (5cm - 50cm dalam bucket 5)
    - Jenis objek (benda_xxx_xxx_netral)
-5. **Generasi Suara**: Mengoutputkan klip suara yang sesuai untuknotifikasi pengguna
+5. **Generasi Suara**: Mengoutputkan klip suara yang sesuai untuk notifikasi pengguna
+
+---
 
 ### Konfigurasi Sistem
 
@@ -156,6 +188,8 @@ Setelah model menghasilkan deteksi, langkah-langkah berikut dilakukan:
 | **GPU Device** | 0 | Device GPU yang digunakan |
 | **Supabase Connection** | Sesuai .env | Untuk menyimpan riwayat deteksi |
 
+---
+
 ### Persyaratan Sistem
 
 - **Python**: 3.9+ recommended
@@ -165,6 +199,8 @@ Setelah model menghasilkan deteksi, langkah-langkah berikut dilakukan:
 - **Uvicorn**: ASGI server
 - **Cloudflare CLI** (opsional): Untuk tunnel publik
 - **Supabase** (opsional): Untuk penyimpanan riwayat dan dashboard
+
+---
 
 ### Cara Menjalankan
 
@@ -203,6 +239,8 @@ Setelah model menghasilkan deteksi, langkah-langkah berikut dilakukan:
         -F "file=@gambar.jpg"
    ```
 
+---
+
 ### Struktur Proyek Penting
 
 ```
@@ -220,3 +258,18 @@ VestCare-Vest-Detection-Stage-2/
 ├── .env              # Environment configuration
 └── README.md        # Dokumentasi ini
 ```
+
+---
+
+## Penerbitan dan Lokasi Implementasi Code
+
+Bagian-bagian di atas merangkum dokumentasi arsitektur. Berikut adalah lokasi referensi implementasi di dalam kode program:
+
+| File Python | Baris | Keterangan Fungsional |
+|-------------|-------|----------------------|
+| **train_semua.py** | **19** | `from ultralytics import YOLO` — Impor library Ultralytics untuk memuat model YOLO26n-seg |
+| **train_semua.py** | **1260** | `model.train(MODEL, ...)` — Sini model di-train dengan arsitektur yang sudah termasuk fungsi aktivasi **SiLU** secara bawaan PyTorch/Ultralytics |
+| **server_rest_api.py** | **167** | `from ultralytics import YOLO` — Digunakan saat inferensi/server berjalan untuk memuat model dan melakukan forward pass |
+| **start_train.py** | **17** | `from train_semua import main` — Entry point yang memanggil fungsi training utama |
+
+**Catatan tentang SiLU**: Fungsi aktivasi **SiLU (Swish)** bukan didefinisikan secara eksplisit dalam file-file Python proyek VestCare, melainkan **bawaan library PyTorch** (`torch.nn.SiLU`). Ketika model `yolo26n-seg.pt` di-load dan dieksekusi (baik saat training di `train_semua.py:1260` maupun inferensi di `server_rest_api.py:167`), setiap lapisan konvolusi dan blok arsitektur (C3k2, C2PSA, dll.) secara otomatis menggunakan SiLU sebagai fungsi aktivasi-nya, sebagaimana telah ditetapkan dalam definisi arsitektur model YOLO26n-seg.
