@@ -1257,6 +1257,54 @@ def latih(data_yaml: Path, run_name: str) -> tuple[Path, Path]:
     print("=" * 60 + "\n")
 
     model: Any = YOLO(MODEL)
+
+    # Print model architecture summary
+    print("=" * 70)
+    print("MODEL ARCHITECTURE SUMMARY - VestCare YOLO26n-seg")
+    print("=" * 70)
+    print()
+
+    # Print basic model info
+    print("Model type: YOLO26n-seg (Segmentation)")
+    print("Task: Segmentasi dengan 5 kelas vestcare + 1 kelas internal")
+    print("Input size: 512 x 512 x 3 (RGB)")
+    print()
+
+    # Print backbone layer structure from config YAML
+    import yaml
+    cfg_path = ROOT / "cfg" / "yolo26n-seg-semua-c3k.yaml"
+    if cfg_path.is_file():
+        with open(cfg_path, "r") as f:
+            cfg = yaml.safe_load(f)
+
+        print("BACKBONE LAYERS:")
+        print("-" * 70)
+        for layer_cfg in cfg.get("backbone", []):
+            layer_type = layer_cfg[2] if len(layer_cfg) > 2 else "Unknown"
+            layer_args = layer_cfg[3] if len(layer_cfg) > 3 else []
+            repeats = layer_cfg[1] if len(layer_cfg) > 1 else 1
+            print("  - " + layer_type + " x" + str(repeats) + (" " + str(layer_args) if layer_args else ""))
+
+        print()
+        print("HEAD LAYERS:")
+        print("-" * 70)
+        for layer_cfg in cfg.get("head", []):
+            layer_type = layer_cfg[2] if len(layer_cfg) > 2 else "Unknown"
+            layer_args = layer_cfg[3] if len(layer_cfg) > 3 else []
+            print("  - " + layer_type + (" " + str(layer_args) if layer_args else ""))
+
+        print()
+        print("OUTPUT HEADS:")
+        print("   - Classification: 5 classes + 1 internal (non-target)")
+        print("   - Bounding box: 4 coordinates (x, y, w, h)")
+        print("   - Mask segmentation: Output mask per kelas")
+
+    print()
+    print("=" * 70)
+    print("Siap melatih model...")
+    print("=" * 70)
+    print()
+
     model.train(
         data=str(data_yaml),
         model=MODEL,
